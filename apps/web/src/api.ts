@@ -1,0 +1,141 @@
+/** Shapes returned by the Trialguard API (see apps/api/src/app.ts). */
+
+export type Cadence = 'weekly' | 'monthly' | 'quarterly' | 'annual';
+export type Status = 'active' | 'trial' | 'cancel_pending' | 'cancel_verified' | 'charged_after_cancel' | 'dismissed';
+
+export interface Connection {
+  id: string;
+  type: 'bank' | 'gmail' | 'outlook';
+  provider: string;
+  label: string;
+  status: 'active' | 'error';
+  error?: string;
+  lastSyncedAt?: string;
+}
+
+export interface Me {
+  id: string;
+  email: string;
+  plan: 'free' | 'plus';
+  state?: string;
+  alertPrefs: { push: boolean; email: boolean };
+  forwardingAddress: string;
+  entitlements: { maxTrialAlerts: number | null; priceHikeAlerts: boolean; postCancelCheck: boolean; savingsTracker: boolean };
+  connections: Connection[];
+  lastSyncAt?: string;
+}
+
+export interface Item {
+  id: string;
+  name: string;
+  merchantId?: string;
+  kind: 'subscription' | 'trial';
+  status: Status;
+  amountCents: number;
+  cadence: Cadence;
+  nextChargeDate?: string;
+  trialEndsAt?: string;
+  paymentMethod?: string;
+  rail: 'card' | 'paypal' | 'app_store' | 'google_play';
+  sources: string[];
+  confidence: number;
+  confirmedByUser: boolean;
+  priceChange?: { oldCents: number; newCents: number; effectiveDate?: string; detectedFrom: string };
+  cancelledAt?: string;
+  cancelProof?: string;
+  cancelVerifiedAt?: string;
+  cancelStartedAt?: string;
+  postCancelChargeIds?: string[];
+  category: string;
+  cancelDifficulty?: 'easy' | 'medium' | 'hard';
+  daysUntilCharge?: number;
+  yearlyCents: number;
+  alertsOn: boolean;
+  needsReview: boolean;
+}
+
+export interface CancelPlan {
+  method: 'deep_link' | 'app_store' | 'google_play' | 'paypal' | 'guide_only';
+  url?: string;
+  steps: string[];
+  difficulty: 'easy' | 'medium' | 'hard';
+  phone?: string;
+  conciergeAvailable: boolean;
+  rights: { state: string; law: string; summary: string }[];
+  tips: string[];
+}
+
+export interface ItemDetail extends Item {
+  transactions: { id: string; date: string; amountCents: number; description: string; paymentMethod: string }[];
+  cancelPlan: CancelPlan;
+}
+
+export interface Summary {
+  monthlyCents: number;
+  yearlyCents: number;
+  activeCount: number;
+  trialCount: number;
+  trialsMonthlyCents: number;
+  savedSoFarCents: number | null;
+  verifiedSavedCents: number | null;
+  projectedYearlySavingsCents: number;
+  cancelledCount: number;
+  plusPrice: { monthlyCents: number; yearlyCents: number };
+}
+
+export interface Alert {
+  id: string;
+  itemId: string;
+  type: string;
+  title: string;
+  body: string;
+  sendAt: string;
+  sentAt?: string;
+  readAt?: string;
+}
+
+export interface SyncSummary {
+  itemsFound: number;
+  trials: number;
+  newItems: number;
+  errors: string[];
+}
+
+const TOKEN_KEY = 'trialguard.token';
+
+export function getToken(): string | null {
+  try {
+    return localStorage.getItem(TOKEN_KEY);
+  } catch {
+    return null;
+  }
+}
+
+export function setToken(token: string | null) {
+  try {
+    if (token) localStorage.setItem(TOKEN_KEY, token);
+    else localStorage.removeItem(TOKEN_KEY);
+  } catch {
+    // storage unavailable (private mode); session lasts until reload
+  }
+}
+
+export class ApiError extends Error {
+  status: number;
+  constructor(status: number, message: string) {
+    super(message);
+    this.status = status;
+  }
+}
+
+export async function api<T>(method: string, path: string, body?: unknown): Promise<T> {
+  const token = getToken();
+  const res = await fetch(`/api${path}`, {
+    method,
+    headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  const json = await res.json().catch(() => ({}));
+  if (!res.ok) throw new ApiError(res.status, json.error ?? `Request failed (${res.status})`);
+  return json as T;
+}
