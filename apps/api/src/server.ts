@@ -3,7 +3,8 @@ import { assertNodeVersion, assertProductionConfig, config } from './config.ts';
 import { keys } from './crypto.ts';
 import { createApp } from './app.ts';
 import { createDeliveryFromEnv } from './delivery/index.ts';
-import { startJobs } from './jobs.ts';
+import { sweepExpiredSubscriptions } from './billing/index.ts';
+import { registerDailyJob, startJobs } from './jobs.ts';
 import { log, reportError } from './log.ts';
 import { defaultDeps } from './pipeline.ts';
 import { Store } from './store.ts';
@@ -18,6 +19,8 @@ const store = new Store(config.dataFile);
 const delivery = createDeliveryFromEnv(store);
 const deps = { ...defaultDeps, notifier: delivery.notifier };
 const server = createServer(createApp(store, deps));
+// Backstop for lost App Store / Play notifications: re-derive plans past expiry once a day.
+registerDailyJob('billing-sweep', sweepExpiredSubscriptions);
 const stopJobs = config.runJobs ? startJobs(store, delivery.notifier, deps) : () => {};
 
 process.on('unhandledRejection', (err) => reportError(err, { source: 'unhandledRejection' }));
