@@ -31,4 +31,7 @@ jobs:
       - run: npm run lint
       - run: npm run typecheck
       - run: npm test
+      - run: node --test evals/*.test.ts
+      # Accuracy gate: fails if any rules-only detection/extraction metric drops below evals/baseline.json.
+      - run: npm run eval -- --quiet
       - run: npm run build -w @trialguard/web
