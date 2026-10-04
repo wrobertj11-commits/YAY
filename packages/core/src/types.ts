@@ -14,7 +14,12 @@ export type ItemStatus =
   | 'charged_after_cancel' // a charge landed after cancellation (post-cancel check, F8)
   | 'dismissed'; // user said "this isn't a subscription"
 
-export type Source = 'bank' | 'email' | 'forwarded' | 'manual' | 'app_store' | 'google_play';
+/**
+ * Where a fact came from. `forwarded` is something the signed-in user handed us (pasted in the app, or mailed
+ * to their forwarding address from their own account email); `inbound` arrived at the forwarding address
+ * from anyone else, so its claimed sender can't be trusted.
+ */
+export type Source = 'bank' | 'email' | 'forwarded' | 'inbound' | 'manual' | 'app_store' | 'google_play';
 
 /** Billing rails that hide the real merchant behind their own descriptor. */
 export type PaymentRail = 'card' | 'paypal' | 'app_store' | 'google_play';

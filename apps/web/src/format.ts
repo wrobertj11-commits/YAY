@@ -43,6 +43,7 @@ export const SOURCE_LABEL: Record<string, string> = {
   bank: 'Bank',
   email: 'Email',
   forwarded: 'Forwarded',
+  inbound: 'Forwarded',
   manual: 'Added by you',
   app_store: 'App Store',
   google_play: 'Google Play',

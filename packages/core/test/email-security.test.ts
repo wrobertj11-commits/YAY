@@ -136,6 +136,22 @@ describe('spoofed cancellation emails', () => {
     assert.equal(isTrustedCancellation({ ...legacy, senderDomain: 'netflix.com' }, netflix()), true);
   });
 
+  it('never trusts mail a stranger sent to the forwarding address, even from the "right" domain', () => {
+    const spoof: EmailSignal & { source: 'inbound' } = {
+      kind: 'cancellation_confirmation',
+      emailId: 'e_inbound',
+      merchantId: 'netflix',
+      serviceName: 'Netflix',
+      receivedAt: TODAY,
+      confidence: 0.9,
+      extractedBy: 'rules',
+      senderDomain: 'netflix.com',
+      source: 'inbound',
+    };
+    assert.equal(isTrustedCancellation(spoof, netflix()), false);
+    assert.equal(isTrustedCancellation({ ...spoof, source: 'forwarded' }, netflix()), true);
+  });
+
   it('checks against the tracked item when the signal names no merchant', () => {
     const signal: EmailSignal = {
       kind: 'cancellation_confirmation',

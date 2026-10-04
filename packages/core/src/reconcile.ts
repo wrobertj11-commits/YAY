@@ -65,7 +65,10 @@ function signalKey(s: EmailSignal): string {
  * outside the catalog have no known domains to check against.
  */
 export function isTrustedCancellation(s: EmailSignal & { source?: Source }, item: TrackedItem): boolean {
-  if ((s.source ?? 'email') === 'forwarded') return true;
+  const source = s.source ?? 'email';
+  // Anyone who learns a forwarding address can mail it a fake "you've been cancelled" with any From line.
+  if (source === 'inbound') return false;
+  if (source === 'forwarded') return true;
   const merchant = getMerchant(item.merchantId ?? s.merchantId);
   if (!merchant) return true;
   const domain = s.senderDomain;

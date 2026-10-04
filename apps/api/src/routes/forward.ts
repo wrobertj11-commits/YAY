@@ -1,7 +1,9 @@
 import { z } from 'zod';
 import { config } from '../config.ts';
 import { newId, safeEqual } from '../crypto.ts';
-import { assert } from '../http.ts';
+import { senderAddressOf } from '@trialguard/core';
+import { assert, HttpError } from '../http.ts';
+import { LIMITS, RateLimiter } from '../ratelimit.ts';
 import { ingestEmail, recompute } from '../pipeline.ts';
 import { zText, type RouteDeps } from './shared.ts';
 
@@ -22,6 +24,12 @@ const zInbound = z.looseObject({
 });
 
 const forwardTokenOf = (to: string) => to.match(/^u-([a-z0-9_-]+)@/i)?.[1]?.toLowerCase();
+
+/**
+ * Per-forwarding-address limit. The route itself is keyed by IP, but every delivery comes from the
+ * mail provider's few IPs, so a per-IP limit alone would let one noisy address block everyone's mail.
+ */
+const perAddress = new RateLimiter({ inbound: LIMITS.inbound });
 
 export function register({ router, store, deps }: RouteDeps) {
   router.on('POST', '/api/forward', { body: zForward, limit: 'ingest' }, async ({ user, body }) => {
@@ -44,7 +52,7 @@ export function register({ router, store, deps }: RouteDeps) {
   router.on(
     'POST',
     '/api/inbound',
-    { auth: 'none', body: zInbound, limit: 'inbound', limitKey: ({ ip }) => ip, maxBody: 2_000_000 },
+    { auth: 'none', body: zInbound, limit: 'webhook', limitKey: ({ ip }) => ip, maxBody: 2_000_000 },
     async ({ req, body }) => {
       if (config.inboundSecret || config.production) {
         assert(safeEqual(req.headers['x-inbound-secret'] as string | undefined, config.inboundSecret), 'Forbidden', 403);
@@ -52,13 +60,18 @@ export function register({ router, store, deps }: RouteDeps) {
       const token = forwardTokenOf(body.to);
       const user = token ? store.data.users.find((u) => u.forwardToken === token) : undefined;
       assert(user, 'Unknown forwarding address', 404);
+      const wait = perAddress.take('inbound', user.id);
+      if (wait) throw new HttpError(429, 'Too many forwarded emails', undefined, { 'Retry-After': String(wait) });
+      // Mail the user forwarded from their own account address is theirs; anything else is untrusted input.
+      const forwarder = senderAddressOf(body.from ?? '');
+      const source = forwarder && forwarder === user.email.toLowerCase() ? 'forwarded' : 'inbound';
       const messageId = body.messageId ?? newId('fwd');
       if (!store.markWebhookProcessed('inbound_email', messageId, deps.clock().toISOString())) return { accepted: false, duplicate: true };
       const signal = await ingestEmail(
         store,
         user,
         { id: messageId, from: body.originalFrom ?? body.from ?? '', subject: body.subject ?? '', date: deps.clock().toISOString(), body: body.text ?? '' },
-        'forwarded',
+        source,
         deps,
       );
       if (signal) recompute(store, user, deps);
