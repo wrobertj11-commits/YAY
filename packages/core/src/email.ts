@@ -36,6 +36,26 @@ export const RECEIPT_SENDER_PATTERN = /(billing|receipts?|invoice|payments?|nore
 export const GMAIL_QUERY =
   'newer_than:120d (subject:(trial OR receipt OR subscription OR membership OR renewal OR renews OR "price change" OR "price increase" OR "welcome to" OR invoice OR cancellation OR cancelled OR canceled))';
 
+const DOMAIN_RE = /^[a-z0-9-]+(\.[a-z0-9-]+)+$/;
+
+/**
+ * The sender's bare address from a From header. Uses the angle-bracketed address at the end, so a
+ * display name such as `"billing@netflix.com" <x@attacker.example>` can't pass for the real sender.
+ */
+export function senderAddressOf(from: string): string | undefined {
+  const bracketed = from.match(/<([^<>]*)>\s*$/)?.[1];
+  const candidate = (bracketed ?? from.trim().split(/\s+/).pop() ?? '').trim().toLowerCase();
+  const at = candidate.lastIndexOf('@');
+  if (at < 1 || !DOMAIN_RE.test(candidate.slice(at + 1))) return undefined;
+  return candidate;
+}
+
+/** Lower-case domain of the sender's address, or undefined when the From header has no usable address. */
+export function senderDomainOf(from: string): string | undefined {
+  const address = senderAddressOf(from);
+  return address?.slice(address.lastIndexOf('@') + 1);
+}
+
 export function isRelevantEmail(from: string, subject: string): boolean {
   if (SUBJECT_PATTERNS.some((p) => p.test(subject))) return true;
   return RECEIPT_SENDER_PATTERN.test(from) || Boolean(merchantByEmailDomain(from));
@@ -200,7 +220,10 @@ export function extractEmailSignal(email: EmailMessage): EmailSignal | undefined
   const kind = classify(email.subject, email.body);
   if (!kind) return undefined;
 
-  const merchant = merchantByEmailDomain(email.from) ?? merchantByName(email.subject) ?? merchantByName(email.body.slice(0, 400));
+  // Attribute by the real address, not the display name (which the sender chooses freely).
+  const sender = senderAddressOf(email.from);
+  const merchant =
+    (sender ? merchantByEmailDomain(sender) : undefined) ?? merchantByName(email.subject) ?? merchantByName(email.body.slice(0, 400));
   const subjectName = email.subject.match(/welcome to ([A-Z][\w+&' ]{1,30}?)(?:[!.,:]|$| -)/i)?.[1]?.trim();
   const serviceName = merchant?.name ?? subjectName ?? displayName(email.from) ?? 'Unknown service';
 
@@ -215,6 +238,7 @@ export function extractEmailSignal(email: EmailMessage): EmailSignal | undefined
     receivedAt,
     confidence,
     extractedBy: 'rules',
+    senderDomain: senderDomainOf(email.from),
   };
 
   if (kind === 'trial_signup') {
