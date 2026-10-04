@@ -1,3 +1,4 @@
+import { z } from 'zod';
 import type { ISODate, Transaction } from '@trialguard/core';
 import { config } from '../config.ts';
 import { sandboxTransactions } from '../sandbox.ts';
@@ -29,21 +30,95 @@ interface PlaidTransaction {
   pending: boolean;
 }
 
+/** Credentials and endpoint for one Plaid environment. Defaults come from config; tests pass their own. */
+export interface PlaidSettings {
+  clientId?: string;
+  secret?: string;
+  /** "sandbox" or "production": selects https://<env>.plaid.com. */
+  env: string;
+  /** Public URL of POST /api/webhooks/plaid. Set on every link token so each Item reports changes to us. */
+  webhookUrl?: string;
+}
+
+export interface PlaidBankOptions {
+  settings?: PlaidSettings;
+  /** Injected by tests so nothing touches the network. */
+  fetch?: typeof fetch;
+  /** Per-request timeout, so a slow Plaid call can't hold a sync or a webhook response open. */
+  timeoutMs?: number;
+}
+
+/** A failed Plaid call. Keeps Plaid's documented error fields so callers can branch on `errorCode`. */
+export class PlaidApiError extends Error {
+  endpoint: string;
+  status: number;
+  errorType?: string;
+  errorCode?: string;
+  constructor(endpoint: string, status: number, body: { error_type?: unknown; error_code?: unknown; error_message?: unknown }) {
+    super(`Plaid ${endpoint}: ${typeof body.error_message === 'string' ? body.error_message : status}`);
+    this.name = 'PlaidApiError';
+    this.endpoint = endpoint;
+    this.status = status;
+    if (typeof body.error_type === 'string') this.errorType = body.error_type;
+    if (typeof body.error_code === 'string') this.errorCode = body.error_code;
+  }
+}
+
+/** Public half of a Plaid webhook signing key (a P-256 JWK), from /webhook_verification_key/get. */
+export interface PlaidWebhookKey {
+  kid: string;
+  alg: string;
+  kty: string;
+  crv: string;
+  x: string;
+  y: string;
+  /** Unix seconds. Null while the key is current; set once Plaid retires it. */
+  expiredAt: number | null;
+}
+
+const zWebhookKeyResponse = z.object({
+  key: z.object({
+    kid: z.string(),
+    alg: z.string(),
+    kty: z.string(),
+    crv: z.string(),
+    x: z.string(),
+    y: z.string(),
+    expired_at: z.number().nullable().optional(),
+  }),
+});
+
+/** Shown on a Plaid connection whose access token is gone (the user revoked access at Plaid or at their bank). */
+export const PLAID_DISCONNECTED_MESSAGE = 'Access to this bank was turned off. Remove it and connect it again to keep tracking charges.';
+
 /**
  * Read-only Plaid aggregation (F1). Uses Link for the user-facing connect flow, then
- * /transactions/sync with a stored cursor for incremental updates.
+ * /transactions/sync with a stored cursor for incremental updates. Webhooks (plaid/webhooks.ts)
+ * tell us when to pull and when an Item needs the user to sign in again.
  */
 export class PlaidBank implements BankProvider {
-  private base = `https://${config.plaid.env}.plaid.com`;
+  private settings: PlaidSettings;
+  private base: string;
+  private fetchImpl: typeof fetch;
+  private timeoutMs: number;
+
+  constructor(opts: PlaidBankOptions = {}) {
+    this.settings = opts.settings ?? config.plaid;
+    this.base = `https://${this.settings.env}.plaid.com`;
+    this.fetchImpl = opts.fetch ?? ((input, init) => fetch(input, init));
+    this.timeoutMs = opts.timeoutMs ?? 30_000;
+  }
 
   private async call<T>(endpoint: string, body: Record<string, unknown>): Promise<T> {
-    const res = await fetch(`${this.base}${endpoint}`, {
+    const res = await this.fetchImpl(`${this.base}${endpoint}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ client_id: config.plaid.clientId, secret: config.plaid.secret, ...body }),
+      body: JSON.stringify({ client_id: this.settings.clientId, secret: this.settings.secret, ...body }),
+      signal: AbortSignal.timeout(this.timeoutMs),
     });
-    const json = (await res.json()) as T & { error_message?: string };
-    if (!res.ok) throw new Error(`Plaid ${endpoint}: ${json.error_message ?? res.status}`);
+    // Plaid errors are JSON, but a gateway error page in front of it may not be.
+    const json = (await res.json().catch(() => ({}))) as T & { error_type?: unknown; error_code?: unknown; error_message?: unknown };
+    if (!res.ok) throw new PlaidApiError(endpoint, res.status, json);
     return json;
   }
 
@@ -51,13 +126,27 @@ export class PlaidBank implements BankProvider {
     return Boolean(config.plaid.clientId && config.plaid.secret);
   }
 
+  /** Link token for connecting a new Item. */
   async createLinkToken(userId: string): Promise<string> {
+    return this.linkToken(userId, { products: ['transactions'] });
+  }
+
+  /**
+   * Link token for update mode: Link re-authenticates the existing Item instead of creating a new one,
+   * so the access token and item_id stay the same. Plaid takes the access token in place of `products`.
+   */
+  async createUpdateLinkToken(userId: string, accessToken: string): Promise<string> {
+    return this.linkToken(userId, { access_token: accessToken });
+  }
+
+  private async linkToken(userId: string, mode: { products: string[] } | { access_token: string }): Promise<string> {
     const r = await this.call<{ link_token: string }>('/link/token/create', {
       user: { client_user_id: userId },
       client_name: 'Trialguard',
-      products: ['transactions'],
       country_codes: ['US'],
       language: 'en',
+      ...(this.settings.webhookUrl ? { webhook: this.settings.webhookUrl } : {}),
+      ...mode,
     });
     return r.link_token;
   }
@@ -67,8 +156,21 @@ export class PlaidBank implements BankProvider {
     return { accessToken: r.access_token, itemId: r.item_id };
   }
 
+  /** Ends the Item at Plaid, so we stop receiving its data. For when the user removes a bank. */
+  async removeItem(accessToken: string): Promise<void> {
+    await this.call('/item/remove', { access_token: accessToken });
+  }
+
+  /** The public key a webhook was signed with, by the JWT's `kid`. Shape-checked, since signatures are verified with it. */
+  async getWebhookVerificationKey(kid: string): Promise<PlaidWebhookKey> {
+    const r = zWebhookKeyResponse.parse(await this.call<unknown>('/webhook_verification_key/get', { key_id: kid }));
+    const { expired_at, ...key } = r.key;
+    return { ...key, expiredAt: expired_at ?? null };
+  }
+
   async sync({ accessToken, cursor }: { accessToken?: string; cursor?: string }): Promise<BankSyncResult> {
-    if (!accessToken) throw new Error('Missing Plaid access token');
+    // The token is deleted when access is revoked; only connecting the bank again brings it back.
+    if (!accessToken) throw new Error(PLAID_DISCONNECTED_MESSAGE);
     const transactions: Transaction[] = [];
     const removedIds: string[] = [];
     let next = cursor;

@@ -1,7 +1,61 @@
+import { useState } from 'react';
 import type { AppData, Nav } from '../App.tsx';
-import type { Item } from '../api.ts';
+import type { Connection, Item } from '../api.ts';
 import { money, price, relativeDays, shortDate } from '../format.ts';
 import { Avatar, Empty } from '../ui.tsx';
+
+const RECONNECT_DISMISSED_KEY = 'trialguard.reconnectDismissed';
+
+function readDismissed(): string | null {
+  try {
+    return localStorage.getItem(RECONNECT_DISMISSED_KEY);
+  } catch {
+    return null;
+  }
+}
+
+/** Shown while a bank connection needs the user to sign in again. "Not now" lasts until a different problem appears. */
+function ReconnectBanner({ connections, nav }: { connections: Connection[]; nav: Nav }) {
+  const [dismissed, setDismissed] = useState(readDismissed);
+  const broken = connections.filter((c) => c.type === 'bank' && (c.status === 'reauth_required' || c.status === 'pending_expiration'));
+  // Names this exact set of problems, so a newly broken bank shows the banner again.
+  const key = broken
+    .map((c) => `${c.id}:${c.status}`)
+    .sort()
+    .join(',');
+  const [first] = broken;
+  if (!first || dismissed === key) return null;
+
+  const dismiss = () => {
+    try {
+      localStorage.setItem(RECONNECT_DISMISSED_KEY, key);
+    } catch {
+      // storage unavailable (private mode); hidden until reload
+    }
+    setDismissed(key);
+  };
+  const expiringOnly = broken.every((c) => c.status === 'pending_expiration');
+  const title = broken.length > 1 ? `Reconnect ${broken.length} bank accounts` : expiringOnly ? `Access to ${first.label} expires soon` : `Reconnect ${first.label}`;
+
+  return (
+    <div className="alert-banner warn" role="status">
+      <strong>{title}</strong>
+      <span>
+        {expiringOnly
+          ? 'Reconnect before access runs out so new charges keep coming in.'
+          : "Until you do, we can't see new charges, so trial and renewal alerts may be late."}
+      </span>
+      <div className="banner-actions">
+        <button className="btn btn-small btn-primary" onClick={() => nav.tab('settings')}>
+          Reconnect in Account
+        </button>
+        <button className="btn btn-small btn-link" onClick={dismiss}>
+          Not now
+        </button>
+      </div>
+    </div>
+  );
+}
 
 function TrialCard({ item, onClick }: { item: Item; onClick: () => void }) {
   const d = item.daysUntilCharge ?? 0;
@@ -77,6 +131,8 @@ export function HomeScreen({ data, nav }: { data: AppData; nav: Nav }) {
           <span>Tap to get your money back →</span>
         </button>
       ))}
+
+      <ReconnectBanner connections={me.connections} nav={nav} />
 
       {trials.length > 0 && (
         <section>
