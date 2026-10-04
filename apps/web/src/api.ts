@@ -82,6 +82,35 @@ export interface ItemDetail extends Item {
   cancelPlan: CancelPlan;
 }
 
+export type ConciergeStatus = 'queued' | 'in_progress' | 'done' | 'failed' | 'cancelled';
+
+/** A done-for-you cancellation request (GET /api/concierge). `cancelled` means the user withdrew it. */
+export interface ConciergeRequest {
+  id: string;
+  itemId: string;
+  itemName?: string;
+  merchantName?: string;
+  status: ConciergeStatus;
+  feeCents: number;
+  /** From our team: what happened, or why it couldn't be done. */
+  note?: string;
+  /** Cancellation proof our team captured (confirmation number, email reference). */
+  proof?: string;
+  createdAt: string;
+  updatedAt?: string;
+  closedAt?: string;
+  authorization: { textVersion: string; signedName: string; signedAt: string; revokedAt?: string } | null;
+}
+
+/** GET /api/concierge/authorization-text. Submitting requires the same `version`. */
+export interface ConciergeAuthorizationText {
+  version: string;
+  /** True until counsel has reviewed the wording. */
+  draft: boolean;
+  merchantName: string | null;
+  text: string;
+}
+
 export interface Summary {
   monthlyCents: number;
   yearlyCents: number;

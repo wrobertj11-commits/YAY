@@ -139,21 +139,38 @@ export interface AuditEntry {
 export interface ConciergeAuthorization {
   /** Version of the authorization text the user agreed to. */
   textVersion: string;
+  /** SHA-256 (hex) of the exact text shown for this merchant, so the wording agreed to can be proven later. */
+  textSha256: string;
+  /** Merchant named in the text: the only company staff may contact under this authorization. */
+  merchantName: string;
   /** Name the user typed as their signature. */
   signedName: string;
   signedAt: string;
   ip?: string;
   userAgent?: string;
+  /** Set when the user withdraws the request. The authorization ends then (and when the request closes). */
+  revokedAt?: string;
 }
 
 export interface ConciergeRequest {
   id: string;
   userId: string;
   itemId: string;
+  /** Catalog merchant at request time (concierge is only offered for catalog merchants). */
+  merchantId?: string;
   feeCents: number;
   status: 'queued' | 'in_progress' | 'done' | 'failed' | 'cancelled';
+  /** Requests created before written authorization existed have none, and staff can't claim them. */
   authorization?: ConciergeAuthorization;
+  /** Staff id (X-Staff-Id) that claimed the request. */
   assignedTo?: string;
+  claimedAt?: string;
+  /** When it reached done, failed or cancelled. */
+  closedAt?: string;
+  /** Cancellation proof captured by staff on 'done' (confirmation number, email reference). */
+  proof?: string;
+  /** Outcome note from staff, shown to the user (required on 'failed'). */
+  note?: string;
   createdAt: string;
   updatedAt?: string;
 }
