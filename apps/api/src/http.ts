@@ -113,11 +113,17 @@ function isEmptyObject(v: unknown): boolean {
   return Boolean(v) && typeof v === 'object' && !Array.isArray(v) && Object.keys(v as object).length === 0;
 }
 
-export function clientIp(req: IncomingMessage): string {
-  if (config.trustProxy) {
+/**
+ * The caller's address. Behind proxies, X-Forwarded-For is "<whatever the client sent>, …, <added by our proxies>":
+ * load balancers append, so the left-most entries are attacker-controlled. Count `trustProxyHops` entries from
+ * the right instead (1 = a single load balancer in front of us).
+ */
+export function clientIp(req: IncomingMessage, hops = config.trustProxyHops): string {
+  if (hops > 0) {
     const fwd = req.headers['x-forwarded-for'];
-    const first = (Array.isArray(fwd) ? fwd[0] : fwd)?.split(',')[0]?.trim();
-    if (first) return first;
+    const parts = (Array.isArray(fwd) ? fwd.join(',') : (fwd ?? '')).split(',').map((p) => p.trim()).filter(Boolean);
+    const chosen = parts[parts.length - hops];
+    if (chosen) return chosen;
   }
   return req.socket.remoteAddress ?? 'unknown';
 }

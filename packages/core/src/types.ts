@@ -15,9 +15,9 @@ export type ItemStatus =
   | 'dismissed'; // user said "this isn't a subscription"
 
 /**
- * Where a fact came from. `forwarded` is something the signed-in user handed us (pasted in the app, or mailed
- * to their forwarding address from their own account email); `inbound` arrived at the forwarding address
- * from anyone else, so its claimed sender can't be trusted.
+ * Where a fact came from. `forwarded` is something the signed-in user handed us (pasted in the app);
+ * `inbound` arrived at their forwarding address, where anyone can send mail with any From line, so its
+ * claimed sender can't be trusted.
  */
 export type Source = 'bank' | 'email' | 'forwarded' | 'inbound' | 'manual' | 'app_store' | 'google_play';
 

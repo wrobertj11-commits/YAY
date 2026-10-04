@@ -225,11 +225,13 @@ describe('Plaid webhooks and update mode', () => {
     syncImpl = defaultSync;
   });
 
+  let deliveries = 0;
   async function webhook(base: string, payload: Record<string, unknown>, opts: { signed?: boolean; jwt?: string } = {}) {
     const body = JSON.stringify(payload, null, 2);
     const headers: Record<string, string> = { 'Content-Type': 'application/json' };
     if (opts.jwt) headers['Plaid-Verification'] = opts.jwt;
-    else if (opts.signed !== false) headers['Plaid-Verification'] = signWebhook(body);
+    // Each call is a distinct delivery (Plaid stamps a fresh iat); identical signed content is a replay by design.
+    else if (opts.signed !== false) headers['Plaid-Verification'] = signWebhook(body, { iat: nowSeconds() - (deliveries++ % 250) });
     const res = await fetch(`${base}/api/webhooks/plaid`, { method: 'POST', headers, body });
     return { status: res.status, json: (await res.json()) as any };
   }
@@ -401,5 +403,39 @@ describe('Plaid webhooks and update mode', () => {
     assert.equal(bank.error, undefined);
     assert.ok(bankCalls.some((c) => c.connectionId === bank.id));
     assert.ok(r.json.summary.itemsFound > 0);
+  });
+});
+
+describe('Plaid verifier under attack', () => {
+  const body = JSON.stringify({ webhook_type: 'ITEM', webhook_code: 'ERROR', item_id: 'item-1', error: { error_code: 'ITEM_LOGIN_REQUIRED' } });
+  const raw = Buffer.from(body);
+
+  it('a flood of unknown key ids cannot evict the real key', async () => {
+    const plaid = fakePlaid();
+    const verifier = new PlaidWebhookVerifier({ fetchKey: plaidKeySource(new PlaidBank({ settings: SETTINGS, fetch: plaid.fetch })), clock });
+    assert.equal((await verifier.verify(signWebhook(body), raw)).ok, true);
+    for (let i = 0; i < 200; i++) {
+      // Junk kids need no valid signature: the lookup happens first. Throttled lookups throw; that's fine.
+      await verifier.verify(signWebhook(body, { kid: `junk-${i}` }), raw).catch(() => undefined);
+    }
+    const before = plaid.keyFetches();
+    assert.equal((await verifier.verify(signWebhook(body), raw)).ok, true, 'real key still cached');
+    assert.equal(plaid.keyFetches(), before, 'no new lookup needed for the real key');
+  });
+
+  it('a re-encoded (high-S) copy of a delivery gets the same replay id', async () => {
+    const plaid = fakePlaid();
+    const verifier = new PlaidWebhookVerifier({ fetchKey: plaidKeySource(new PlaidBank({ settings: SETTINGS, fetch: plaid.fetch })), clock });
+    const jwt = signWebhook(body);
+    const [h, p, s = ''] = jwt.split('.');
+    const sig = Buffer.from(s, 'base64url');
+    const n = BigInt('0xFFFFFFFF00000000FFFFFFFFFFFFFFFFBCE6FAADA7179E84F3B9CAC2FC632551');
+    const highS = n - BigInt(`0x${sig.subarray(32).toString('hex')}`);
+    const malleated = Buffer.concat([sig.subarray(0, 32), Buffer.from(highS.toString(16).padStart(64, '0'), 'hex')]);
+    const a = await verifier.verify(jwt, raw);
+    const b = await verifier.verify(`${h}.${p}.${malleated.toString('base64url')}`, raw);
+    assert.ok(a.ok);
+    // Either rejected outright or recognised as the same delivery: never a fresh one.
+    if (b.ok) assert.equal(b.tokenId, a.tokenId);
   });
 });

@@ -15,6 +15,7 @@ const { StaticKeyring, seal, unseal, needsRotation } = await import('../src/keyr
 const { redact, scrub } = await import('../src/log.ts');
 const { renderPrometheus, inc } = await import('../src/metrics.ts');
 const { assertNodeVersion } = await import('../src/config.ts');
+const { clientIp } = await import('../src/http.ts');
 
 const deps = { ...defaultDeps, llm: undefined, notifier: undefined, clock: () => new Date('2026-10-03T15:00:00Z') };
 
@@ -154,5 +155,20 @@ describe('runtime guard', () => {
     assert.throws(() => assertNodeVersion('20.18.0'));
     assert.doesNotThrow(() => assertNodeVersion('22.18.0'));
     assert.doesNotThrow(() => assertNodeVersion('24.1.0'));
+  });
+});
+
+describe('client ip behind proxies', () => {
+  const req = (xff: string | undefined) => ({ headers: xff === undefined ? {} : { 'x-forwarded-for': xff }, socket: { remoteAddress: '10.0.0.5' } }) as never;
+
+  it('ignores the client-controlled left-most entries', () => {
+    assert.equal(clientIp(req('6.6.6.6, 198.51.100.66'), 1), '198.51.100.66');
+    assert.equal(clientIp(req('6.6.6.6, 198.51.100.66, 10.1.1.1'), 2), '198.51.100.66');
+  });
+
+  it('uses the socket address when no proxy is trusted or the header is short', () => {
+    assert.equal(clientIp(req('6.6.6.6'), 0), '10.0.0.5');
+    assert.equal(clientIp(req(undefined), 1), '10.0.0.5');
+    assert.equal(clientIp(req('198.51.100.66'), 2), '10.0.0.5');
   });
 });

@@ -58,10 +58,32 @@ describe('forwarding address', () => {
     assert.equal(signal?.source, 'inbound');
   });
 
-  it("trusts the same email when the user forwards it from their own address", async () => {
+  it('does not trust a forged From that matches the account email either', async () => {
+    // Forging "From: blair@example.com" is trivial and the payload carries no DMARC verdict.
     const res = await inbound('u-fwdb@in.trialguard.app', 'Blair <Blair@Example.com>', 1);
     assert.equal(res.status, 200);
+    assert.equal(status('b'), 'active');
+  });
+
+  it('trusts the same cancellation when the signed-in user pastes it in the app', async () => {
+    const res = await fetch(`${base}/api/forward`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer tok-b' },
+      body: JSON.stringify({ from: 'Spotify <no-reply@spotify.com>', subject: 'Your Premium subscription has been cancelled', text: 'Sorry to see you go.' }),
+    });
+    assert.equal(res.status, 200);
     assert.equal(status('b'), 'cancel_pending');
+  });
+
+  it('delivers one merchant email sent to two users to both of them', async () => {
+    const send = (to: string) =>
+      fetch(`${base}/api/inbound`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ to, from: 'x@example.com', subject: 'Your free trial has started', text: 'Your 7-day free trial ends on October 12, 2026. Then $9.99/month.', messageId: '<same@netflix.com>' }),
+      }).then((r) => r.json() as Promise<{ accepted: boolean }>);
+    assert.equal((await send('u-fwda@in.trialguard.app')).accepted, true);
+    assert.equal((await send('u-fwdb@in.trialguard.app')).accepted, true, 'dedupe is per recipient');
   });
 
   it('rate limits per forwarding address, not per provider IP', async () => {

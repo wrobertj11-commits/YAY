@@ -56,6 +56,7 @@ const SHA256_HEX_RE = /^[0-9a-f]{64}$/i;
 /** Raw r||s for P-256 (JWS ES256), not DER. */
 const ES256_SIGNATURE_BYTES = 64;
 const MAX_CACHED_KEYS = 64;
+const MAX_CACHED_MISSES = 1024;
 
 interface ParsedJwt {
   header: Record<string, unknown>;
@@ -111,7 +112,10 @@ export class PlaidWebhookVerifier {
   private keyTtlMs: number;
   private missTtlMs: number;
   private lookups: RateLimiter;
+  /** Real keys by kid. */
   private cache = new Map<string, CachedKey>();
+  /** Kids Plaid said don't exist, with when we asked. */
+  private misses = new Map<string, number>();
   /** Concurrent webhooks naming the same new kid share one lookup. */
   private pending = new Map<string, Promise<CachedKey>>();
 
@@ -156,13 +160,17 @@ export class PlaidWebhookVerifier {
     const actualHash = createHash('sha256').update(rawBody).digest('hex');
     if (!safeEqual(claimedHash.toLowerCase(), actualHash)) return fail('body_hash');
 
-    // Identifies this exact signed delivery, so the route can drop a replay inside the five-minute window.
-    return { ok: true, tokenId: createHash('sha256').update(header).digest('hex').slice(0, 32) };
+    // Identifies the signed content (header + payload, which carries iat and the body hash), not the header's
+    // spelling: ECDSA signatures are malleable (high-S, spare base64url bits), so keying on the raw header
+    // would let a re-encoded copy of the same delivery count as new.
+    return { ok: true, tokenId: createHash('sha256').update(jwt.signingInput).digest('hex').slice(0, 32) };
   }
 
   private async lookup(kid: string, nowMs: number): Promise<CachedKey> {
+    const missedAt = this.misses.get(kid);
+    if (missedAt !== undefined && nowMs - missedAt < this.missTtlMs) return { fetchedAt: missedAt };
     const cached = this.cache.get(kid);
-    if (cached && nowMs - cached.fetchedAt < (cached.key ? this.keyTtlMs : this.missTtlMs)) return cached;
+    if (cached && nowMs - cached.fetchedAt < this.keyTtlMs) return cached;
     try {
       return await this.refresh(kid);
     } catch (err) {
@@ -184,12 +192,23 @@ export class PlaidWebhookVerifier {
         throw new KeyUnavailableError('Could not fetch the Plaid webhook key', { cause: err });
       }
       const entry = toCached(key, this.clock().getTime());
-      this.cache.delete(kid);
-      this.cache.set(kid, entry);
-      // Bounded: drop the oldest entries (Map keeps insertion order).
-      for (const oldest of this.cache.keys()) {
-        if (this.cache.size <= MAX_CACHED_KEYS) break;
-        this.cache.delete(oldest);
+      if (entry.key) {
+        this.misses.delete(kid);
+        this.cache.delete(kid);
+        this.cache.set(kid, entry);
+        // Only real keys live here, and only Plaid can mint them, so junk kids can't evict a real key.
+        for (const oldest of this.cache.keys()) {
+          if (this.cache.size <= MAX_CACHED_KEYS) break;
+          this.cache.delete(oldest);
+        }
+      } else {
+        // Unknown kids are remembered separately (bounded), so a flood of them only evicts other misses.
+        this.misses.delete(kid);
+        this.misses.set(kid, entry.fetchedAt);
+        for (const oldest of this.misses.keys()) {
+          if (this.misses.size <= MAX_CACHED_MISSES) break;
+          this.misses.delete(oldest);
+        }
       }
       return entry;
     })().finally(() => this.pending.delete(kid));

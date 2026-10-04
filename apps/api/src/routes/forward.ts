@@ -1,7 +1,6 @@
 import { z } from 'zod';
 import { config } from '../config.ts';
 import { newId, safeEqual } from '../crypto.ts';
-import { senderAddressOf } from '@trialguard/core';
 import { assert, HttpError } from '../http.ts';
 import { LIMITS, RateLimiter } from '../ratelimit.ts';
 import { ingestEmail, recompute } from '../pipeline.ts';
@@ -62,11 +61,13 @@ export function register({ router, store, deps }: RouteDeps) {
       assert(user, 'Unknown forwarding address', 404);
       const wait = perAddress.take('inbound', user.id);
       if (wait) throw new HttpError(429, 'Too many forwarded emails', undefined, { 'Retry-After': String(wait) });
-      // Mail the user forwarded from their own account address is theirs; anything else is untrusted input.
-      const forwarder = senderAddressOf(body.from ?? '');
-      const source = forwarder && forwarder === user.email.toLowerCase() ? 'forwarded' : 'inbound';
+      // The From header of mail reaching this address proves nothing (anyone can forge it, and the payload carries
+      // no DMARC verdict), so inbound mail is always untrusted input: it can add trials and receipts, but it can
+      // never mark something cancelled. Pasting in the signed-in app (/api/forward) is the trusted path.
+      const source = 'inbound';
       const messageId = body.messageId ?? newId('fwd');
-      if (!store.markWebhookProcessed('inbound_email', messageId, deps.clock().toISOString())) return { accepted: false, duplicate: true };
+      // Per recipient: one merchant email To/Cc two Trialguard users must reach both of them.
+      if (!store.markWebhookProcessed('inbound_email', `${user.id}:${messageId}`, deps.clock().toISOString())) return { accepted: false, duplicate: true };
       const signal = await ingestEmail(
         store,
         user,

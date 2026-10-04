@@ -16,8 +16,11 @@ export const config = {
   webDist: path.resolve(here, '../../web/dist'),
   /** Public base URL, used in email links (unsubscribe, deep links). */
   publicUrl: (env.PUBLIC_URL ?? `http://localhost:${env.PORT ?? 8787}`).replace(/\/$/, ''),
-  /** Honour X-Forwarded-For (only when running behind a trusted proxy / load balancer). */
-  trustProxy: env.TRUST_PROXY === '1',
+  /**
+   * Number of trusted proxies in front of the API that append to X-Forwarded-For (0 = use the socket address).
+   * TRUST_PROXY=1 is kept as shorthand for one hop.
+   */
+  trustProxyHops: Number(env.TRUST_PROXY_HOPS ?? (env.TRUST_PROXY === '1' ? 1 : 0)),
   /** Domain for personal forwarding addresses (F6). */
   inboundDomain: env.INBOUND_EMAIL_DOMAIN ?? 'in.trialguard.app',
   /** Shared secret the inbound-email provider (e.g. SES/Postmark webhook) sends. Required in production. */

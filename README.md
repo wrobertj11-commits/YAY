@@ -96,7 +96,7 @@ Plus is a real store subscription: entitlements come only from verified App Stor
   - The model has no tools, delimiters are neutralized, and every field is bounds-checked.
   - LLM-only results are capped below the review threshold.
   - An LLM-only "cancelled" is ignored.
-- **Spoofed cancellations are ignored.** A "you've been cancelled" email only counts when it comes from the merchant's own domain, or from the user themselves (pasted in the app, or forwarded from their account address).
+- **Spoofed cancellations are ignored.** A "you've been cancelled" email only counts when it comes from the merchant's own domain in the user's connected inbox, or when the user pastes it in the app. Mail sent to a forwarding address can add trials and receipts, but never cancels anything: anyone can send it with any From line.
 - **Provider tokens** are encrypted with versioned keys (`v2.<kid>…`, key id bound as AAD). The keyring is loaded from a mounted secrets file. Rotate with `node apps/api/scripts/rotate-tokens.ts`.
 - **Logs** are JSON with personal data redacted (emails, tokens, card and account digits, names, notes). Metrics are at `/metrics`.
 - **Your data:**
@@ -111,7 +111,7 @@ Anything not set falls back to dev-friendly defaults. In production the server r
 
 | Area | Env vars |
 |---|---|
-| Server | `PORT`, `PUBLIC_URL` (https in prod), `TRUST_PROXY=1` behind a load balancer, `LOG_LEVEL`, `NODE_ENV=production` |
+| Server | `PORT`, `PUBLIC_URL` (https in prod), `TRUST_PROXY_HOPS` = number of proxies in front that append `X-Forwarded-For` (`TRUST_PROXY=1` means one), `LOG_LEVEL`, `NODE_ENV=production` |
 | Storage | `TRIALGUARD_DATA_FILE`, `TRIALGUARD_JOB_LOCK_FILE` |
 | Token encryption | `TOKEN_KEYRING_FILE` (preferred), or `TOKEN_ENCRYPTION_KEYS="kid:hex,…"` (first is active), or legacy `TOKEN_ENCRYPTION_KEY` |
 | Secrets | `LINK_SIGNING_SECRET` (unsubscribe links), `INBOUND_WEBHOOK_SECRET`, `ADMIN_TOKEN` (ops API), `METRICS_TOKEN` |
