@@ -102,9 +102,9 @@ export function privacyDisclosures(llmExtraction: boolean): PrivacyDisclosures {
       },
       {
         name: 'Postmark',
-        purpose: 'Alert emails',
-        receives: ['Your email address', `${alertText}, and an unsubscribe link`],
-        when: 'Only if email alerts are on.',
+        purpose: 'Alert emails and email verification codes',
+        receives: ['Your email address', `${alertText}, and an unsubscribe link`, 'A one-time verification code'],
+        when: 'When you ask for a verification code, and for alerts only if email alerts are on.',
       },
       {
         name: 'Inbound email provider',

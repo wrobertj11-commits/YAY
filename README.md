@@ -135,6 +135,8 @@ Anything not set falls back to dev-friendly defaults. In production the server r
 **Account**
 - `POST /api/auth/signup`
 - `POST /api/auth/login` (dev)
+- `POST /api/auth/email/send-code`
+- `POST /api/auth/email/verify` (until verified: no alert emails, and the address isn't reserved)
 - `GET|PATCH|DELETE /api/me`
 - `GET /api/me/export`
 - `GET|PUT /api/me/notifications`

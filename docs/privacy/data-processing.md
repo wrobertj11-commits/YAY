@@ -53,7 +53,7 @@ The same pipeline handles emails the user forwards to their personal address or 
 | **Anthropic** | AI extraction | Sender, subject, received date and text (capped at 30,000 characters) of filtered emails the rules can't fully parse | Only when `ANTHROPIC_API_KEY` is set and `TRIALGUARD_DISABLE_LLM` is not `1` | `ANTHROPIC_API_KEY`, `TRIALGUARD_LLM_MODEL` |
 | **Apple Push Notification service** | iOS push alerts | Device push token; alert title and text (service, amount, date) | Push on, iOS device | `APNS_*` |
 | **Firebase Cloud Messaging (Google)** | Android/web push alerts | Device registration token; alert title and text | Push on, Android or web device | `FCM_SERVICE_ACCOUNT_PATH` |
-| **Postmark** | Alert email | User's email address; alert subject and text; unsubscribe link | Email alerts on | `POSTMARK_SERVER_TOKEN` |
+| **Postmark** | Alert email; email verification codes | User's email address; alert subject and text; unsubscribe link; one-time verification codes | Verification code requested; email alerts on | `POSTMARK_SERVER_TOKEN` |
 | **Inbound email provider** (vendor not chosen yet) | Receives mail sent to `u-<token>@<INBOUND_EMAIL_DOMAIN>` | The full forwarded email | User forwards an email | `INBOUND_EMAIL_DOMAIN`, `INBOUND_WEBHOOK_SECRET` |
 | **Apple App Store / Google Play** | Plus billing | A random account token (`appAccountToken` / `obfuscatedExternalAccountId`) to link the purchase. Returns purchase status. | User buys Plus | `apps/api/src/billing` |
 
