@@ -156,6 +156,8 @@ export interface Alert {
   type: AlertType;
   channel: AlertChannel;
   leadHours?: number;
+  /** Lead-time alert sent late because its send moment had passed when the item was found; it cannot meet `leadHours`. */
+  catchUp?: boolean;
   /** When the alert should go out. */
   sendAt: ISODateTime;
   /** The moment the alert is warning about (charge time). */

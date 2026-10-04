@@ -278,10 +278,12 @@ describe('alerts', () => {
     createManualItem({ name: id, amountCents: 999, cadence: 'monthly', date: ends, isTrial: true }, id, NOW);
 
   it('schedules 48h and 24h alerts before a trial converts', () => {
+    // Due is midnight New York time (04:00Z). Both lead marks land at local midnight, inside the default
+    // 21:00-08:00 quiet hours, so each goes out at 21:00 the evening before: earlier, never later.
     const alerts = scheduleAlerts([trial('t1', '2026-10-10')], 'plus', now, normalizeAlertPrefs({ push: true, email: false }));
-    assert.deepEqual(alerts.map((a) => [a.leadHours, a.sendAt]), [
-      [48, '2026-10-08T12:00:00.000Z'],
-      [24, '2026-10-09T12:00:00.000Z'],
+    assert.deepEqual(alerts.map((a) => [a.leadHours, a.sendAt, a.dueAt]), [
+      [48, '2026-10-08T01:00:00.000Z', '2026-10-10T04:00:00.000Z'],
+      [24, '2026-10-09T01:00:00.000Z', '2026-10-10T04:00:00.000Z'],
     ]);
   });
 
@@ -289,7 +291,9 @@ describe('alerts', () => {
     const alerts = scheduleAlerts([trial('t1', '2026-10-05')], 'plus', now, normalizeAlertPrefs({ push: true, email: false }));
     assert.equal(alerts.length, 2);
     assert.equal(at(alerts, 0).sendAt, now.toISOString());
+    assert.equal(at(alerts, 0).catchUp, true);
     assert.equal(at(alerts, 1).leadHours, 24);
+    assert.equal(at(alerts, 1).catchUp, undefined);
   });
 
   it('caps Free plan trial alerts at the 3 soonest trials', () => {
