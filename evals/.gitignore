@@ -1,0 +1,3 @@
+# Run reports are local artifacts; only the folder itself is committed.
+results/*
+!results/.gitkeep

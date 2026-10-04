@@ -12,6 +12,7 @@
     "start": "npm run build -w @trialguard/web && npm run start -w @trialguard/api",
     "test": "node --test 'packages/*/test/*.test.ts' 'apps/api/test/*.test.ts'",
     "typecheck": "tsc -p tsconfig.json --noEmit && npm run typecheck -w @trialguard/web",
+    "eval": "node evals/run.ts",
     "lint": "eslint ."
   },
   "devDependencies": {
