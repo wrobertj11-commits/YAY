@@ -20,6 +20,12 @@ export interface User {
   firstFoundAt?: string;
   /** Set when the user unsubscribes from alert emails via the one-click link. */
   emailUnsubscribedAt?: string;
+  /**
+   * Stable UUID the app passes to StoreKit as `appAccountToken` and to Play Billing as
+   * `obfuscatedExternalAccountId`, so store notifications can be tied to this account. Created on first
+   * use (see billing/entitlement.ts). Not a credential: it only links a store-signed purchase to a user.
+   */
+  billingAccountToken?: string;
 }
 
 export type ConnectionType = 'bank' | 'gmail' | 'outlook';
@@ -80,6 +86,10 @@ export interface Device {
   disabledAt?: string;
 }
 
+/**
+ * One store subscription, as last reported by a verified App Store / Play source. These records are the
+ * source of truth for entitlement: user.plan is derived from them (billing/entitlement.ts).
+ */
 export interface BillingSubscription {
   id: string;
   userId: string;
@@ -87,10 +97,24 @@ export interface BillingSubscription {
   productId: string;
   /** App Store originalTransactionId, or Play purchaseToken. */
   externalId: string;
-  status: 'active' | 'grace_period' | 'billing_retry' | 'expired' | 'revoked' | 'refunded' | 'paused';
+  /**
+   * active: paid through expiresAt (also a cancelled subscription that hasn't reached expiry).
+   * grace_period: renewal failed but the store keeps access on until gracePeriodExpiresAt.
+   * billing_retry: renewal failed, no access (App Store billing retry, Play account hold).
+   * pending: Play purchase awaiting payment (e.g. cash), no access yet.
+   */
+  status: 'active' | 'grace_period' | 'billing_retry' | 'expired' | 'revoked' | 'refunded' | 'paused' | 'pending';
   expiresAt?: string;
+  /** End of the store's grace period, after expiresAt has passed. */
+  gracePeriodExpiresAt?: string;
   autoRenew?: boolean;
   environment?: string;
+  /**
+   * Store-side time of the newest event applied (Apple signedDate), so a late or replayed older event
+   * can't roll the state back.
+   */
+  lastEventAt?: string;
+  createdAt?: string;
   updatedAt: string;
 }
 
