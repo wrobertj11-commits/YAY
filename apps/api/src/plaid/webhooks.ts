@@ -1,8 +1,8 @@
 /**
  * Plaid webhooks: what each one means for a bank connection.
  *
- * Getting Plaid production access (to move into docs/ once reviewed)
- * -------------------------------------------------------------------
+ * Getting Plaid production access (also in docs/LAUNCH.md)
+ * ---------------------------------------------------------
  * 1. In the Plaid Dashboard, request Production access for the Transactions product. Plaid asks for
  *    a company profile and use case, and has you complete its security questionnaire. Approval is
  *    a review with its own queue, so start it early.
@@ -22,7 +22,7 @@
  *    webhooks.
  * 6. When a user removes a bank, call PlaidBank.removeItem. Plaid recommends it when a user
  *    disconnects, and for a subscription-billed product like Transactions it is what ends billing
- *    for that Item (DELETE /api/connections/:id doesn't call it yet).
+ *    for that Item. DELETE /api/connections/:id does this (best effort).
  *
  * Handling
  * --------

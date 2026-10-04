@@ -74,6 +74,9 @@ export interface CancelPlan {
   phone?: string;
   conciergeAvailable: boolean;
   rights: { state: string; law: string; summary: string }[];
+  /** ISO date of the last legal review of the rights wording, or null if it hasn't had one. */
+  rightsLastReviewed: string | null;
+  rightsNeedCounselReview: boolean;
   tips: string[];
 }
 

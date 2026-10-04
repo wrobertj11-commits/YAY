@@ -347,7 +347,10 @@ function CancelFlow({ item, me, onBack, onDone, concierge, onConcierge, onStarte
           </div>
         ))}
         {!me.state && <p className="fine">Set your state in Account to see state-specific rights.</p>}
-        <p className="fine">General information, not legal advice.</p>
+        <p className="fine">
+          General information, not legal advice.
+          {plan.rightsNeedCounselReview || !plan.rightsLastReviewed ? ' This summary has not yet been reviewed by a lawyer.' : ` Last reviewed ${shortDate(plan.rightsLastReviewed)}.`}
+        </p>
       </details>
 
       <div className="card finish">

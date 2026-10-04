@@ -11,7 +11,7 @@ Start the **[external]** items first. Each one has a queue the team doesn't cont
 |---|---|---|
 | **Google OAuth verification + CASA assessment** [external] | `gmail.readonly` is a restricted scope. Until the app is verified and has passed a Cloud Application Security Assessment, consent is limited to test users. | Needs a published privacy policy that includes the Limited Use disclosure (draft in `docs/privacy/data-processing.md`), a homepage, a demo video of the OAuth flow, and an authorized assessor for CASA. Plan for re-assessment every year. |
 | **Microsoft publisher verification** [external] | Without it, Outlook users see an "unverified" consent screen, and many organizations block consent to unverified multi-tenant apps. | Needs a Microsoft AI Cloud Partner Program (formerly MPN) account and a verified publisher domain matching the app registration. `Mail.Read` (delegated) is the only mail scope requested. |
-| **Plaid production access** [external] | Sandbox and limited development access aren't enough for real users. | Request in the Plaid Dashboard: company and use-case profile, security questionnaire, application display info. Some large banks need extra OAuth registration on top of production approval, so budget extra time for those. See the notes at the top of `apps/api/src/plaid/webhooks.ts`. |
+| **Plaid production access** [external] | Sandbox and limited development access aren't enough for real users. | See "Plaid production" below. |
 | **Apple / Google store review of the subscription** [external] | Plus is an auto-renewing in-app subscription. | Server notifications are implemented (`apps/api/src/billing`). Configure the App Store Server Notifications V2 URL and the Play RTDN Pub/Sub topic and push subscription. |
 
 ## Privacy and legal [counsel]
@@ -33,12 +33,45 @@ Start the **[external]** items first. Each one has a queue the team doesn't cont
   - Ask whether the concierge fee may be charged outside Apple in-app purchase, given a person performs the service. App Store Review Guideline 3.1.3(e) is likely relevant.
   - See `docs/concierge.md`.
 
+## Plaid production [external + ops]
+
+1. **Request production access.** In the Plaid Dashboard, request Production access for the Transactions product. Plaid asks for a company profile and use case and has you complete its security questionnaire. Approval is a review with its own queue, so start it early.
+2. **Display information.** Fill in the application display information (name, logo, website). Link shows it to users when they connect a bank.
+3. **OAuth banks.** Several large US institutions connect through OAuth and need extra registration on top of production approval, tracked per institution in the Dashboard. The native app also needs its redirect configured; neither value is sent yet (see `createLinkToken` in `providers/bank.ts`):
+   - an allowed redirect URI (iOS universal link) in the Dashboard, passed as `redirect_uri` on `/link/token/create`
+   - the Android package name, passed as `android_package_name`
+4. **Production credentials.** Production has its own secret and its own Items; nothing linked in Sandbox carries over. Set `PLAID_ENV=production`, `PLAID_CLIENT_ID`, `PLAID_SECRET`.
+5. **Webhooks.**
+   - Set `PLAID_WEBHOOK_URL` to the public HTTPS URL of `POST /api/webhooks/plaid`. It is attached to each Item when its link token is created, so Items linked before it was set need `/item/webhook/update`.
+   - The API must be able to reach `production.plaid.com` to fetch webhook verification keys. Production rejects unsigned webhooks [code].
+6. **Disconnects.** Disconnecting a bank calls `/item/remove`, which ends Plaid billing for that Item [code].
+
 ## Email deliverability [ops]
 
-- Set up a transactional sender (Postmark is implemented) on a dedicated subdomain (e.g. `alerts.trialguard.app`).
-- Publish **SPF** and **DKIM** records for that domain, then **DMARC**: start at `p=none` with reporting, and move to `quarantine`/`reject` once reports are clean.
-- Every alert email carries `List-Unsubscribe` and `List-Unsubscribe-Post: List-Unsubscribe=One-Click` (RFC 8058), an unsubscribe link and the company postal address (CAN-SPAM) [code]. Gmail and Yahoo require one-click unsubscribe and DMARC from bulk senders.
-- Set `COMPANY_POSTAL_ADDRESS`, `EMAIL_FROM`, `POSTMARK_SERVER_TOKEN`, `PUBLIC_URL`, `LINK_SIGNING_SECRET`.
+Alert emails go through Postmark. Every one carries:
+- `List-Unsubscribe` and `List-Unsubscribe-Post: List-Unsubscribe=One-Click` (RFC 8058)
+- an unsubscribe link
+- the company postal address (CAN-SPAM) [code]
+
+Set `POSTMARK_SERVER_TOKEN`, `EMAIL_FROM`, `COMPANY_POSTAL_ADDRESS`, `PUBLIC_URL` (https) and `LINK_SIGNING_SECRET`. DNS for the sending domain (example: `trialguard.app`), all before launch, because Gmail and Yahoo reject or spam-folder mail without it:
+
+1. **Sender signature.** In Postmark, go to Sender Signatures and add the domain (not a single address).
+2. **DKIM.**
+   - Add the TXT record Postmark shows at `<selector>pm._domainkey.trialguard.app` (`k=rsa; p=…`, copied exactly), then verify it in Postmark.
+   - DMARC aligns on the DKIM `d=` domain.
+3. **Return-Path (SPF alignment).** Add a CNAME `pm-bounces.trialguard.app` → `pm.mtasv.net` and verify it in Postmark. SPF is checked on this domain, so the root SPF record needs no Postmark include.
+4. **SPF on the root.**
+   - Exactly one TXT record starting `v=spf1`, listing only services that send with a `trialguard.app` envelope sender.
+   - At most 10 DNS lookups.
+   - Never two `v=spf1` records.
+5. **DMARC.**
+   - Add TXT `_dmarc.trialguard.app` = `v=DMARC1; p=none; rua=mailto:dmarc@trialguard.app; adkim=r; aspf=r`.
+   - Watch the aggregate reports for 2–4 weeks, then move to `p=quarantine`, then `p=reject`.
+6. **One-click unsubscribe.** In a received message, check that the DKIM-Signature `h=` tag covers `list-unsubscribe` and `list-unsubscribe-post`.
+7. **End-to-end check.**
+   - Send an alert to a Gmail account. "Show original" must show SPF, DKIM (`trialguard.app`) and DMARC all PASS.
+   - Gmail must show "Unsubscribe" next to the sender.
+8. **Complaints.** Keep the spam-complaint rate under 0.3% (Google Postmaster Tools), and act on Postmark bounce and complaint webhooks.
 
 ## Push [ops]
 
