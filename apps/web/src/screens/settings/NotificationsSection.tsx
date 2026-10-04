@@ -46,8 +46,11 @@ const zoneLabel = (tz: string) => tz.replace(/_/g, ' ');
 export function NotificationsSection({ me, busy, run, toast }: SectionProps) {
   const prefs = me.alertPrefs;
   const [info, setInfo] = useState<NotificationSettings | null>(null);
-  const [quiet, setQuiet] = useState(prefs.quietHours ?? { start: '21:00', end: '08:00' });
-  const device = useMemo(deviceTimeZone, []);
+  // Unsaved edits to the quiet-hours inputs; otherwise the inputs show what's saved (which may change from another device).
+  const [draft, setDraft] = useState<{ start: string; end: string } | null>(null);
+  const quiet = draft ?? prefs.quietHours ?? { start: '21:00', end: '08:00' };
+  const setQuiet = setDraft;
+  const device = useMemo(() => deviceTimeZone(), []);
   const zones = useMemo(() => timeZoneOptions(device, prefs.timeZone), [device, prefs.timeZone]);
 
   useEffect(() => {
@@ -56,12 +59,8 @@ export function NotificationsSection({ me, busy, run, toast }: SectionProps) {
       .catch(() => setInfo(null));
   }, []);
 
-  // Keep the time inputs in step with what's saved (e.g. after another device changed it).
   const savedStart = prefs.quietHours?.start;
   const savedEnd = prefs.quietHours?.end;
-  useEffect(() => {
-    if (savedStart && savedEnd) setQuiet({ start: savedStart, end: savedEnd });
-  }, [savedStart, savedEnd]);
 
   const save = (patch: Patch, msg = 'Saved') =>
     run(async () => {
@@ -72,8 +71,8 @@ export function NotificationsSection({ me, busy, run, toast }: SectionProps) {
   const commitQuiet = () => {
     if (!HHMM.test(quiet.start) || !HHMM.test(quiet.end)) return;
     if (quiet.start === quiet.end) return toast('Quiet hours need different start and end times');
-    if (quiet.start === savedStart && quiet.end === savedEnd) return;
-    void save({ quietHours: quiet }, 'Quiet hours saved');
+    if (quiet.start === savedStart && quiet.end === savedEnd) return setDraft(null);
+    void save({ quietHours: quiet }, 'Quiet hours saved').then(() => setDraft(null));
   };
 
   const activeDevices = info?.devices.filter((d) => d.enabled).length ?? 0;

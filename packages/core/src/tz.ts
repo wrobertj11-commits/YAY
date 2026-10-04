@@ -70,6 +70,9 @@ function wallClock(instantMs: number, timeZone: string): WallClock {
       case 'second':
         w.second = n;
         break;
+      default:
+        // literal separators and other parts carry no wall-clock value
+        break;
     }
   }
   return w;

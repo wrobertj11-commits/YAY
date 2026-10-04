@@ -204,7 +204,7 @@ describe('outbox: send-once delivery', () => {
     r = await d.dispatchOutbox(store, notifier, { ...opts, clock: () => at(30_000) });
     assert.equal(r.retried + r.failed + r.sent, 0, 'not attempted before nextAttemptAt');
 
-    r = await d.dispatchOutbox(store, notifier, { ...opts, clock: () => at(MIN) });
+    await d.dispatchOutbox(store, notifier, { ...opts, clock: () => at(MIN) });
     assert.equal(alert()?.attempts, 2);
     assert.equal(alert()?.nextAttemptAt, at(MIN + 2 * MIN).toISOString(), 'delay doubles');
 

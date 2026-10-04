@@ -18,7 +18,8 @@ export default tseslint.config(
       '@typescript-eslint/no-floating-promises': 'error',
       '@typescript-eslint/no-misused-promises': ['error', { checksVoidReturn: { attributes: false } }],
       '@typescript-eslint/await-thenable': 'error',
-      '@typescript-eslint/switch-exhaustiveness-check': 'error',
+      // A switch must handle every case, or say explicitly (with `default`) that the rest don't matter.
+      '@typescript-eslint/switch-exhaustiveness-check': ['error', { considerDefaultExhaustiveForUnions: true }],
       // `_`-prefixed names mark intentionally unused bindings (e.g. stripping fields with rest).
       '@typescript-eslint/no-unused-vars': ['error', { argsIgnorePattern: '^_', varsIgnorePattern: '^_', destructuredArrayIgnorePattern: '^_' }],
       '@typescript-eslint/consistent-type-imports': ['error', { fixStyle: 'inline-type-imports' }],
