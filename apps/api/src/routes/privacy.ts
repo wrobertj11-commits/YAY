@@ -307,6 +307,11 @@ const CONCIERGE_FIELDS: FieldPolicy<ConciergeRequest> = {
   status: 'keep',
   authorization: 'keep', // the user's own signature, IP and browser at signing
   assignedTo: 'omit', // staff identity; status says where the request is
+  merchantId: 'keep',
+  claimedAt: 'keep',
+  closedAt: 'keep',
+  proof: 'keep', // the cancellation evidence staff captured for the user
+  note: 'keep', // shown to the user already (e.g. why a request failed)
   createdAt: 'keep',
   updatedAt: 'keep',
 };

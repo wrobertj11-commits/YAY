@@ -87,7 +87,7 @@ function seed(store: StoreT, id: string, mark: string): void {
     itemId: `itm_${id}`,
     feeCents: 1200,
     status: 'in_progress',
-    authorization: { textVersion: '1', signedName: `Signer ${mark}`, signedAt: T, ip: '203.0.113.9', userAgent: 'Safari' },
+    authorization: { textVersion: '1', textSha256: 'a'.repeat(64), merchantName: 'Netflix', signedName: `Signer ${mark}`, signedAt: T, ip: '203.0.113.9', userAgent: 'Safari' },
     assignedTo: SECRETS.staff,
     createdAt: T,
   });

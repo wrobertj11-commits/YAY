@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { buildCancelPlan, getMerchant, markCancelled } from '@trialguard/core';
+import { closeForSelfCancel } from '../concierge/requests.ts';
 import { assert } from '../http.ts';
 import { recompute } from '../pipeline.ts';
 import { todayFor, userItem, zText, type RouteDeps } from './shared.ts';
@@ -21,6 +22,7 @@ export function register({ router, store, deps }: RouteDeps) {
     } else if (body.action === 'completed') {
       assert(item.status === 'active' || item.status === 'trial' || item.status === 'charged_after_cancel', 'Item is already cancelled');
       Object.assign(item, markCancelled(item, todayFor(deps), now, body.proof || 'Marked cancelled in app'));
+      closeForSelfCancel(store, user, item.id, deps);
     } else {
       assert(item.status === 'cancel_pending', 'Only a pending cancellation can be undone');
       Object.assign(item, { status: item.trialEndsAt ? 'trial' : 'active', cancelledAt: undefined, cancelProof: undefined });

@@ -197,7 +197,12 @@ export class Router {
           throw new HttpError(401, 'Sign in required');
         }
       } else if (auth === 'admin') {
-        if (!config.adminToken || !safeEqual(bearer, config.adminToken)) throw new HttpError(config.adminToken ? 401 : 404, config.adminToken ? 'Admin token required' : 'Not found');
+        if (!config.adminToken || !safeEqual(bearer, config.adminToken)) {
+          // Wrong admin tokens drain the same per-IP auth bucket, so the token can't be brute-forced.
+          const wait = this.limiter.take('auth', ip);
+          if (wait) throw new HttpError(429, 'Too many requests', undefined, { 'Retry-After': String(wait) });
+          throw new HttpError(config.adminToken ? 401 : 404, config.adminToken ? 'Admin token required' : 'Not found');
+        }
       }
 
       const m = route.pattern.exec(url.pathname);

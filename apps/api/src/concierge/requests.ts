@@ -133,6 +133,27 @@ export function withdrawRequest(store: Store, user: User, id: string, deps: Cloc
   return request;
 }
 
+/**
+ * The user cancelled the subscription themselves while a request was still open: close it so staff don't
+ * act on a finished job, and revoke the authorization exactly as a withdrawal would.
+ */
+export function closeForSelfCancel(store: Store, user: User, itemId: string, deps: Clock): number {
+  const open = store.data.concierge.filter((r) => r.userId === user.id && r.itemId === itemId && isOpen(r));
+  const at = deps.clock().toISOString();
+  for (const request of open) {
+    const from = request.status;
+    request.status = 'cancelled';
+    request.closedAt = at;
+    request.updatedAt = at;
+    request.note = 'You cancelled this yourself, so we closed the request.';
+    if (request.authorization) request.authorization.revokedAt = at;
+    record(store, request, { type: 'user', id: user.id }, 'concierge.closed_self_cancelled', at, { from, to: 'cancelled', authorizationRevoked: Boolean(request.authorization) });
+    inc('concierge_events_total', { event: 'closed_self_cancelled' });
+  }
+  if (open.length) store.flush();
+  return open.length;
+}
+
 // ---------- staff actions ----------
 
 /** Staff opened the full request (customer name and, for the assignee, email). Recorded every time. */

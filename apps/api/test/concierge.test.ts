@@ -470,3 +470,23 @@ function assertNoPrivateData(body: string): void {
   assert.ok(!body.includes(user.token) && !body.includes(user.forwardToken));
   assert.ok(!body.includes(USER_AGENT) && !/"ip"|userAgent/.test(body), 'ip and user agent stay in the record');
 }
+
+describe('self-cancel while a request is open', () => {
+  it('closes the open request and revokes the authorization when the user cancels it themselves', async () => {
+    const itemId = await addItem(bob.token, 'spotify', 'Spotify', 1199);
+    const req = await call('POST', `/api/items/${itemId}/concierge`, { token: bob.token, body: sign({ signedName: 'Bob Example' }) });
+    assert.equal(req.status, 200, req.text);
+    const id = req.json.concierge.id as string;
+
+    tick();
+    const done = await call('POST', `/api/items/${itemId}/cancel`, { token: bob.token, body: { action: 'completed', proof: 'CXL-1' } });
+    assert.equal(done.status, 200, done.text);
+
+    const request = store.data.concierge.find((r) => r.id === id);
+    assert.equal(request?.status, 'cancelled');
+    assert.ok(request?.authorization?.revokedAt, 'authorization revoked');
+    assert.ok(auditFor(id).some((e) => e.action === 'concierge.closed_self_cancelled' && e.actor.type === 'user'));
+    // Staff can no longer pick it up.
+    assert.equal((await admin('POST', `/api/admin/concierge/${id}/claim`, 'sam', {})).status, 409);
+  });
+});
