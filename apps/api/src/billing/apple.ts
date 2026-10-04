@@ -85,7 +85,8 @@ type Action = { kind: 'set'; status: SubscriptionStatus } | { kind: 'refresh' } 
 
 /**
  * Maps notificationType / subtype. "refresh" types don't change the status by themselves, but carry the
- * current signed transaction and renewal info, so dates and auto-renew are brought up to date.
+ * current signed transaction and renewal info, so dates, product and auto-renew are brought up to date
+ * and the status follows the transaction (see refreshedStatus).
  */
 export function appleAction(type: string, subtype: string | undefined): Action {
   switch (type) {
@@ -104,6 +105,11 @@ export function appleAction(type: string, subtype: string | undefined): Action {
       return { kind: 'set', status: 'revoked' };
     case 'DID_CHANGE_RENEWAL_STATUS':
     case 'RENEWAL_EXTENDED':
+    case 'OFFER_REDEEMED': // An offer code, promotional or win-back offer; Apple sends it instead of SUBSCRIBED.
+    case 'DID_CHANGE_RENEWAL_PREF': // An UPGRADE takes effect at once, with a new product and expiry.
+      // Offers cover a first purchase (INITIAL_BUY), a lapsed subscriber coming back (RESUBSCRIBE) and plan
+      // changes, so the transaction they carry, not the type, says whether the user is paid up. A DOWNGRADE
+      // or a reverted change only touches the renewal info until the next renewal.
       return { kind: 'refresh' };
     default:
       return { kind: 'ignore' };
@@ -239,20 +245,61 @@ function applyNotification(
 }
 
 /**
+ * May `user` link this verified transaction to their account? Throws a 403 BillingRejection if not;
+ * returns true when the link is a claim of a purchase made outside the app (see below).
+ *
+ * A transaction carrying an appAccountToken belongs to the account that owns that token, and only that one.
+ *
+ * A transaction without one was bought outside the app (an offer code redeemed in the App Store, or through
+ * the offer-code sheet, which can't set a token), so nothing Apple signed says whose it is, and its
+ * notifications arrive unlinked. The app sees such purchases through StoreKit's Transaction.updates and
+ * sends them here; the first signed-in account to present one claims its originalTransactionId, and from
+ * then on every notification for it follows that record (applyTransaction falls back to the record's
+ * owner). After that, only the same account may present it again.
+ *
+ * The trade-off: the binding is "who submitted it first", not proof of who paid. Anyone holding the signed
+ * transaction (in practice: signed in to that Apple ID on their device) could claim it ahead of the payer,
+ * e.g. a second Trialguard account on a shared iPhone. The damage is bounded: one Apple subscription unlocks
+ * one Trialguard account, never several, and the claim is audited with the claiming user so support can
+ * move it. Refusing these purchases outright would leave every offer-code subscriber without Plus.
+ */
+function assertMayLink(store: Store, user: User, tx: Transaction): boolean {
+  const otherAccount = () => new BillingRejection('account', 'This purchase belongs to a different Trialguard account', 403);
+  if (tx.appAccountToken) {
+    if (tx.appAccountToken.toLowerCase() !== billingAccountToken(store, user)) throw otherAccount();
+    return false;
+  }
+  const existing = findSubscription(store, 'app_store', tx.originalTransactionId);
+  if (existing && existing.userId !== user.id) throw otherAccount();
+  return !existing;
+}
+
+/**
  * POST /api/billing/apple/verify: the app sends StoreKit's signed transaction right after a purchase so
- * Plus turns on before the server notification lands. Same verification as notifications, and the
- * transaction must carry this user's appAccountToken, so one person's receipt can't unlock another's account.
+ * Plus turns on before the server notification lands, and for purchases made outside the app, which
+ * notifications alone can't link. Same verification as notifications; who may link what is assertMayLink's
+ * call, so one person's receipt can't unlock another's account.
  */
 export function verifyAppleTransaction(store: Store, user: User, signedTransaction: string, apple: AppleBillingConfig, deps: Clock, log: Logger): AppleOutcome {
   const now = deps.clock();
   const tx = decodeSigned(signedTransaction, zTransaction, apple, now, 'transaction');
   checkApp(apple, tx.bundleId, tx.environment);
   if (tx.type !== AUTO_RENEWABLE) throw new BillingRejection('payload', 'not an auto-renewable subscription');
-  if (tx.appAccountToken?.toLowerCase() !== billingAccountToken(store, user)) {
-    throw new BillingRejection('account', 'This purchase belongs to a different Trialguard account', 403);
-  }
+  // Synchronous from the check to the write, so two accounts can't both claim the same purchase.
+  const claimed = assertMayLink(store, user, tx);
   // Ordered by the transaction's signedDate, so replaying an old (pre-refund) transaction is a no-op.
   const outcome = applyTransaction(store, { tx, action: { kind: 'refresh' }, eventAt: iso(tx.signedDate), linkTo: user }, deps, log);
-  inc('billing_notifications_total', { platform: 'app_store', type: 'CLIENT_VERIFY', result: outcome.result });
+  if (claimed && outcome.result === 'processed') {
+    store.audit({
+      actor: { type: 'user', id: user.id },
+      userId: user.id,
+      action: 'billing.subscription_claimed',
+      subject: { type: 'billing_subscription', id: outcome.recordId },
+      details: { platform: 'app_store', productId: tx.productId, environment: tx.environment },
+      at: now.toISOString(),
+    });
+    log.info('app store purchase without an account token claimed', { recordId: outcome.recordId });
+  }
+  inc('billing_notifications_total', { platform: 'app_store', type: claimed ? 'CLIENT_CLAIM' : 'CLIENT_VERIFY', result: outcome.result });
   return outcome;
 }
