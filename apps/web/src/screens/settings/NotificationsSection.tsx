@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { api, type AlertPrefs, type AlertType } from '../../api.ts';
 import { shortDate } from '../../format.ts';
 import type { SectionProps } from './types.ts';
+import { VerifyEmailCard } from './VerifyEmailCard.tsx';
 
 /** GET/PUT /api/me/notifications. */
 interface NotificationSettings {
@@ -81,6 +82,8 @@ export function NotificationsSection({ me, busy, run, toast }: SectionProps) {
     <section>
       <h2 className="section-title">Notifications</h2>
 
+      {!me.emailVerified && <VerifyEmailCard me={me} busy={busy} run={run} toast={toast} />}
+
       <div className="card form">
         <label className="toggle">
           <input type="checkbox" checked={prefs.push} disabled={busy} onChange={(e) => save({ push: e.target.checked })} />
@@ -99,6 +102,7 @@ export function NotificationsSection({ me, busy, run, toast }: SectionProps) {
           <input type="checkbox" checked={prefs.email} disabled={busy} onChange={(e) => save({ email: e.target.checked })} />
           <span className="stack-sm">
             <span>Email alerts</span>
+            {prefs.email && !me.emailVerified && <small className="muted">On hold until you verify your email address.</small>}
             {!prefs.email && info?.emailUnsubscribedAt && (
               <small className="muted">You unsubscribed on {shortDate(info.emailUnsubscribedAt)}. Turning this on subscribes you again.</small>
             )}

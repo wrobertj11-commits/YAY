@@ -171,6 +171,8 @@ const USER_FIELDS: FieldPolicy<User> = {
   lastSyncAt: 'keep',
   firstFoundAt: 'keep',
   emailUnsubscribedAt: 'keep',
+  emailVerifiedAt: 'keep',
+  emailVerification: 'omit', // a short-lived code hash: a credential while it lasts, and meaningless after
   billingAccountToken: maskToken,
 };
 

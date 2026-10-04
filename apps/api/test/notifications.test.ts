@@ -33,8 +33,9 @@ const MIN = 60_000;
 const scratch = mkdtempSync(path.join(tmpdir(), 'trialguard-notify-'));
 after(() => rmSync(scratch, { recursive: true, force: true }));
 
+/** An established account: its address is verified, so email alerts may go to it. */
 function makeUser(id = 'usr_a'): User {
-  return { id, email: `${id}@example.com`, token: `tok_${id}`, plan: 'plus', forwardToken: `f${id}`, alertPrefs: normalizeAlertPrefs({}), createdAt: T0.toISOString() };
+  return { id, email: `${id}@example.com`, token: `tok_${id}`, plan: 'plus', forwardToken: `f${id}`, alertPrefs: normalizeAlertPrefs({}), createdAt: T0.toISOString(), emailVerifiedAt: T0.toISOString() };
 }
 
 function makeItem(id: string, status: Item['status'], date = '2026-10-05', userId = 'usr_a'): Item {

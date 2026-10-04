@@ -90,6 +90,8 @@ export function skipReasonFor(store: Store, user: User | undefined, alert: Outbo
   if (!prefs[alert.channel]) return 'channel_off';
   if (prefs.types[alert.type] === false) return 'type_off';
   if (alert.channel === 'email' && user.emailUnsubscribedAt) return 'unsubscribed';
+  // Anyone can sign up with any address; only mail the address once its owner has entered a code sent to it.
+  if (alert.channel === 'email' && !user.emailVerifiedAt) return 'email_unverified';
   const item = store.data.items.find((i) => i.id === alert.itemId && i.userId === user.id);
   if (!item) return 'item_gone';
   if (alert.type === 'trial_converting' && item.status !== 'trial') return 'item_not_live';

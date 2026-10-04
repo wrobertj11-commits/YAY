@@ -21,11 +21,29 @@ export interface User {
   /** Set when the user unsubscribes from alert emails via the one-click link. */
   emailUnsubscribedAt?: string;
   /**
+   * When the user proved they read mail at `email` (by entering a code sent there). Until then no alert
+   * email goes to the address, and the account doesn't reserve it: a later signup with the same address
+   * is allowed. Accounts created before verification existed have none and are asked to verify.
+   */
+  emailVerifiedAt?: string;
+  /** The outstanding verification code, if any (see auth/verification.ts). Cleared once used. */
+  emailVerification?: EmailVerification;
+  /**
    * Stable UUID the app passes to StoreKit as `appAccountToken` and to Play Billing as
    * `obfuscatedExternalAccountId`, so store notifications can be tied to this account. Created on first
    * use (see billing/entitlement.ts). Not a credential: it only links a store-signed purchase to a user.
    */
   billingAccountToken?: string;
+}
+
+/** A verification code sent to the user's address. Only a keyed hash of the code is stored. */
+export interface EmailVerification {
+  /** HMAC-SHA256 (hex) of the code, bound to the account and the address it was sent to. */
+  codeHash: string;
+  sentAt: string;
+  expiresAt: string;
+  /** Wrong codes entered against this one. At the limit it stops working, even with the right code. */
+  attempts: number;
 }
 
 export type ConnectionType = 'bank' | 'gmail' | 'outlook';
