@@ -5,6 +5,7 @@ import {
   extractEmailSignal,
   isTrustedCancellation,
   reconcile,
+  safeServiceName,
   scheduleAlerts,
   senderAddressOf,
   senderDomainOf,
@@ -183,5 +184,44 @@ describe('extraction cost on hostile input', () => {
     const started = performance.now();
     extractEmailSignal({ id: 'dos', from: 'a@b.com', subject: 'Your free trial', date: '2026-10-01T00:00:00Z', body: '1'.repeat(200_000) });
     assert.ok(performance.now() - started < 500, `took ${Math.round(performance.now() - started)} ms`);
+  });
+});
+
+describe('forged "trial started" emails', () => {
+  it('cannot re-open a cancelled item or wipe the evidence of a charge after cancellation', () => {
+    const cancelled: TrackedItem = {
+      ...netflix(),
+      status: 'charged_after_cancel',
+      cancelledAt: '2026-09-20',
+      cancelProof: 'conf #123',
+      postCancelChargeIds: ['t1'],
+    };
+    const forged = extractEmailSignal(email('Netflix Team <hello@attacker.example>', 'Your Netflix free trial has started', 'Your free trial ends on October 20, 2026. Then $15.49/month.'))!;
+    assert.equal(forged.kind, 'trial_signup');
+    const r = reconcile({ items: [cancelled], transactions: [], recurring: [], signals: [{ ...forged, receivedAt: TODAY }], today: TODAY, now: `${TODAY}T12:00:00Z`, newId: () => 'x' });
+    const item = r.items[0];
+    assert.equal(item?.status, 'charged_after_cancel');
+    assert.equal(item?.cancelProof, 'conf #123');
+    assert.deepEqual(item?.postCancelChargeIds, ['t1']);
+  });
+
+  it('a verified-cancelled item only restarts on a signup from the merchant itself', () => {
+    const verified: TrackedItem = { ...netflix(), status: 'cancel_verified', cancelledAt: '2026-09-01', cancelVerifiedAt: '2026-09-20' };
+    const forged = extractEmailSignal(email('Netflix <hello@attacker.example>', 'Your Netflix free trial has started', 'Your free trial ends on October 20, 2026.'))!;
+    const real = extractEmailSignal(email('Netflix <info@account.netflix.com>', 'Your Netflix free trial has started', 'Your free trial ends on October 20, 2026.'))!;
+    const run = (s: typeof forged) => reconcile({ items: [verified], transactions: [], recurring: [], signals: [{ ...s, receivedAt: TODAY }], today: TODAY, now: `${TODAY}T12:00:00Z`, newId: () => 'x' }).items[0]?.status;
+    assert.equal(run(forged), 'cancel_verified');
+    assert.equal(run(real), 'trial');
+  });
+});
+
+describe('sender-chosen service names', () => {
+  it('drops names carrying phone numbers or links, and flags unknown senders for review', () => {
+    const s = extractEmailSignal(email('"Call 1-888-555-0100 or visit refund-desk.example to stop charges" <billing@attacker.example>', 'Your free trial has started', 'Your free trial ends on October 20, 2026. Then $9.99/month.'))!;
+    assert.equal(s.serviceName, 'Unknown service');
+    assert.ok(s.confidence < 0.6, 'needs review');
+    assert.equal(safeServiceName('Brightline Yoga'), 'Brightline Yoga');
+    assert.equal(safeServiceName('Call 888 555 0100'), undefined);
+    assert.equal(safeServiceName('see www.example.com'), undefined);
   });
 });

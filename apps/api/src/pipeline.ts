@@ -52,12 +52,20 @@ export interface SyncSummary {
 }
 
 /** Extract one email into a stored signal. The body is used here and then goes out of scope. */
+/**
+ * Syncs await slow provider and LLM calls; the user may delete their account (or the connection) meanwhile.
+ * Writing after that would resurrect data nobody can see, export or delete, so every write re-checks first.
+ */
+function stillThere(store: Store, user: User, c?: Connection): boolean {
+  return store.data.users.some((u) => u.id === user.id) && (!c || store.data.connections.includes(c));
+}
+
 export async function ingestEmail(store: Store, user: User, email: EmailMessage, source: Source, deps: PipelineDeps): Promise<StoredSignal | undefined> {
   if (store.data.signals.some((s) => s.userId === user.id && s.emailId === email.id)) return undefined;
   const timeZone = user.alertPrefs.timeZone;
   let signal = extractEmailSignal(email, { timeZone });
   if (deps.llm && needsLlmExtraction(signal)) signal = mergeSignals(signal, await deps.llm(email, { timeZone }));
-  if (!signal) return undefined;
+  if (!signal || !stillThere(store, user)) return undefined;
   inc('email_signals_total', { extractor: signal.extractedBy, kind: signal.kind, source });
   const stored: StoredSignal = { ...signal, userId: user.id, source };
   store.data.signals.push(stored);
@@ -69,6 +77,7 @@ export async function pullConnection(store: Store, user: User, c: Connection, de
   const accessToken = c.sealedToken ? decrypt(c.sealedToken) : undefined;
   if (c.type === 'bank') {
     const r = await deps.bank(c).sync({ connectionId: c.id, accessToken, cursor: c.cursor, today });
+    if (!stillThere(store, user, c)) return;
     const removed = new Set(r.removedIds);
     const existing = new Set(store.data.transactions.filter((t) => t.userId === user.id).map((t) => t.id));
     store.data.transactions = store.data.transactions.filter((t) => !removed.has(t.id));
@@ -79,6 +88,7 @@ export async function pullConnection(store: Store, user: User, c: Connection, de
   } else {
     const emails = await deps.inbox(c).fetch({ accessToken, since: c.lastSyncedAt, today });
     for (const email of emails) {
+      if (!stillThere(store, user, c)) return;
       if (!isRelevantEmail(email.from, email.subject)) continue;
       await ingestEmail(store, user, email, 'email', deps);
     }
@@ -93,6 +103,7 @@ export async function pullConnection(store: Store, user: User, c: Connection, de
 
 /** Re-runs detection and reconciliation from stored data, then (re)schedules alerts. */
 export function recompute(store: Store, user: User, deps: Pick<PipelineDeps, 'clock'>): { events: ItemEvent[]; newItems: number } {
+  if (!stillThere(store, user)) return { events: [], newItems: 0 };
   const now = deps.clock();
   const today = toISODate(now);
   const transactions = store.data.transactions.filter((t) => t.userId === user.id);

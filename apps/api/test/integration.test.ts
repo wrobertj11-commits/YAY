@@ -145,3 +145,24 @@ describe('trial dates from email follow the user\'s calendar day', () => {
     assert.equal(extractEmailSignal(email, { timeZone: 'America/Los_Angeles' })?.chargeDate, '2026-10-10');
   });
 });
+
+describe('account deletion during a sync', () => {
+  it('a sync that resolves after the user deleted their account writes nothing back', async () => {
+    const { sandboxBank } = await import('../src/providers/bank.ts');
+    const store = new Store();
+    const user = { id: 'gone', email: 'gone@example.com', token: 't-gone', plan: 'free' as const, forwardToken: 'f-gone', createdAt: '2026-10-01T00:00:00Z', alertPrefs: normalizeAlertPrefs({}) };
+    store.data.users.push(user);
+    store.data.connections.push({ id: 'c-gone', userId: 'gone', type: 'bank', provider: 'sandbox', label: 'Bank', status: 'active', createdAt: '2026-10-01T00:00:00Z' });
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const slowBank = { async sync(opts: Parameters<typeof sandboxBank.sync>[0]) { await gate; return sandboxBank.sync(opts); } };
+    const deps = { ...defaultDeps, llm: undefined, notifier: undefined, bank: () => slowBank, clock: () => new Date('2026-10-04T15:00:00Z') };
+    const sync = syncUser(store, user, deps);
+    store.deleteUser(user.id); // DELETE /api/me lands while the bank call is in flight
+    release();
+    await sync;
+    assert.equal(store.data.transactions.filter((t) => t.userId === 'gone').length, 0);
+    assert.equal(store.data.items.filter((i) => i.userId === 'gone').length, 0);
+    assert.equal(store.data.alerts.filter((a) => a.userId === 'gone').length, 0);
+  });
+});

@@ -230,7 +230,8 @@ export function extractEmailSignal(email: EmailMessage, opts: { timeZone?: strin
   const merchant =
     (sender ? merchantByEmailDomain(sender) : undefined) ?? merchantByName(email.subject) ?? merchantByName(email.body.slice(0, 400));
   const subjectName = email.subject.match(/welcome to ([A-Z][\w+&' ]{1,30}?)(?:[!.,:]|$| -)/i)?.[1]?.trim();
-  const serviceName = merchant?.name ?? subjectName ?? displayName(email.from) ?? 'Unknown service';
+  // Without a catalog match the name comes from text the sender controls: keep it only if it is plainly a name.
+  const serviceName = merchant?.name ?? safeServiceName(subjectName) ?? safeServiceName(displayName(email.from)) ?? 'Unknown service';
 
   const prices = findPrices(text);
   const dates = findDates(text, receivedAt);
@@ -287,8 +288,32 @@ export function extractEmailSignal(email: EmailMessage, opts: { timeZone?: strin
     confidence += 0.3;
   }
 
-  signal.confidence = Math.round(Math.min(0.95, confidence) * 100) / 100;
+  // A name only the sender vouches for (no catalog match) can't make an item count as found on its own.
+  const cap = merchant ? 0.95 : UNMATCHED_MAX_CONFIDENCE;
+  signal.confidence = Math.round(Math.min(cap, confidence) * 100) / 100;
   return signal;
+}
+
+const MAX_SERVICE_NAME = 60;
+/** Below the needs-review threshold (0.6): the user confirms an unknown sender's "trial" before it counts. */
+export const UNMATCHED_MAX_CONFIDENCE = 0.55;
+/** Control characters, zero-width characters and bidi overrides: invisible text that can disguise a name. */
+const INVISIBLE_RE = /[\p{Cc}\u200B-\u200F\u202A-\u202E\u2060-\u2069\uFEFF]/u;
+/** Links, addresses and markup: in an alert or email these become clickable or render. */
+const LINKISH_RE = /:\/\/|\bwww\.|@|[<>]|[a-z0-9-]\.[a-z]{2,}(?![a-z0-9-])/i;
+/** Seven or more digits, however punctuated: a phone number ("call 1-888-…") has no place in a service name. */
+const PHONEISH_RE = /(?:\d[\s().-]*){7,}/;
+
+/**
+ * A service name taken from email text (display name, subject, model output) is attacker-controlled and ends up
+ * in alert titles. Accept short plain names only; anything carrying links, phone numbers or invisible characters
+ * is dropped so the caller falls back to a neutral name.
+ */
+export function safeServiceName(v: unknown): string | undefined {
+  if (typeof v !== 'string') return undefined;
+  const name = v.trim().replace(/ {2,}/g, ' ');
+  if (!name || name.length > MAX_SERVICE_NAME || INVISIBLE_RE.test(name) || LINKISH_RE.test(name) || PHONEISH_RE.test(name)) return undefined;
+  return name;
 }
 
 /** Calendar date of a received timestamp in the user's zone (UTC when no zone is given, as stored). */

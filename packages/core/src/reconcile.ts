@@ -58,13 +58,13 @@ function signalKey(s: EmailSignal): string {
 }
 
 /**
- * A cancellation email silences renewal alerts and starts the post-cancel check, so for a catalog
- * merchant it only counts when it was sent from one of that merchant's domains: anyone can email
- * "Your Netflix membership has been cancelled". An email the user forwarded or pasted is their own
- * statement that they cancelled, the same as tapping "I cancelled", so it is trusted. Merchants
- * outside the catalog have no known domains to check against.
+ * Emails that change a cancelled item's state (a cancellation silences renewal alerts and starts the post-cancel
+ * check; a new trial signup re-opens a cancelled item) only count for a catalog merchant when sent from one of that
+ * merchant's domains: anyone can email "Your Netflix membership has been cancelled" or "Your Netflix trial has
+ * started". An email the user pasted in the app is their own statement, so it is trusted. Merchants outside the
+ * catalog have no known domains to check against.
  */
-export function isTrustedCancellation(s: EmailSignal & { source?: Source }, item: TrackedItem): boolean {
+export function isTrustedSignal(s: EmailSignal & { source?: Source }, item: TrackedItem): boolean {
   const source = s.source ?? 'email';
   // Anyone who learns a forwarding address can mail it a fake "you've been cancelled" with any From line.
   if (source === 'inbound') return false;
@@ -74,6 +74,9 @@ export function isTrustedCancellation(s: EmailSignal & { source?: Source }, item
   const domain = s.senderDomain;
   return Boolean(domain && merchant.emailDomains.some((d) => domain === d || domain.endsWith(`.${d}`)));
 }
+
+/** Kept for existing callers: the cancellation case of isTrustedSignal. */
+export const isTrustedCancellation = isTrustedSignal;
 
 function addUnique<T>(list: T[], ...values: T[]): T[] {
   for (const v of values) if (!list.includes(v)) list.push(v);
@@ -168,7 +171,14 @@ export function reconcile(input: ReconcileInput): ReconcileResult {
 
     switch (s.kind) {
       case 'trial_signup': {
-        const restarting = item && isCancelled(item) && (!item.cancelledAt || s.receivedAt > item.cancelledAt);
+        // A real re-subscription comes from the merchant (or the user). A charged-after-cancel item is never
+        // re-opened automatically: its cancellation proof and the disputed charge are the user's evidence.
+        const restarting =
+          item &&
+          isCancelled(item) &&
+          item.status !== 'charged_after_cancel' &&
+          (!item.cancelledAt || s.receivedAt > item.cancelledAt) &&
+          isTrustedSignal(s, item);
         if (!item || restarting) {
           if (!item) {
             item = blankItem({ id: newId(), name: s.serviceName, merchantId: s.merchantId, matchKey: signalKey(s) }, now);

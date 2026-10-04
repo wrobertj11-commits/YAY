@@ -1,7 +1,7 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { zodOutputFormat } from '@anthropic-ai/sdk/helpers/zod';
 import { z } from 'zod';
-import { receivedDate,
+import { safeServiceName, receivedDate,
   addDays,
   extractEmailSignal,
   merchantByEmailDomain,
@@ -69,7 +69,6 @@ const MAX_PRICE_USD = 5000;
 const MAX_TRIAL_DAYS = 366;
 /** Charge and effective dates must fall in this window around the received date (days). */
 const DATE_WINDOW = { before: 31, after: 400 };
-const MAX_SERVICE_NAME = 60;
 /**
  * Ceiling for a result only the model vouches for. It sits under the needs-review threshold (0.6, see
  * publicItem in routes/shared.ts), so the item asks the user to confirm it before it counts as found.
@@ -79,10 +78,6 @@ export const LLM_ONLY_MAX_CONFIDENCE = 0.55;
 const KINDS = ['trial_signup', 'receipt', 'price_increase', 'cancellation_confirmation'] as const satisfies readonly EmailSignalKind[];
 const PERIODS = ['weekly', 'monthly', 'quarterly', 'annual'] as const satisfies readonly Cadence[];
 
-/** Control characters, zero-width characters and bidi overrides: invisible text that can disguise a name. */
-const INVISIBLE_RE = /[\p{Cc}\u200B-\u200F\u202A-\u202E\u2060-\u2069\uFEFF]/u;
-/** Links, addresses and markup. A service name is shown in alerts and emails, where these would become clickable or render. */
-const LINKISH_RE = /:\/\/|\bwww\.|@|[<>]|[a-z0-9-]\.[a-z]{2,}(?![a-z0-9-])/i;
 
 // ---------- prompt ----------
 
@@ -176,12 +171,7 @@ function usdToCents(v: unknown): number | undefined {
   return cents > 0 ? cents : undefined;
 }
 
-function serviceName(v: unknown): string | undefined {
-  if (typeof v !== 'string') return undefined;
-  const name = v.trim();
-  if (!name || name.length > MAX_SERVICE_NAME || INVISIBLE_RE.test(name) || LINKISH_RE.test(name)) return undefined;
-  return name.replace(/ {2,}/g, ' ');
-}
+const serviceName = safeServiceName;
 
 /**
  * The output schema only pins down types. These checks bound the values to what a real subscription email
@@ -320,6 +310,11 @@ export function mergeSignals(rules: EmailSignal | undefined, llmResult: EmailSig
   if (!rules) return llm;
   if (!llm || llm.kind !== rules.kind) return rules;
   const merged: EmailSignal = { ...llm, ...Object.fromEntries(Object.entries(rules).filter(([, v]) => v !== undefined)) };
+  // Rules always produce some name; without a catalog match it is only a fallback, so the model's checked name wins.
+  if (!rules.merchantId && llm.serviceName && llm.serviceName !== 'Unknown service') {
+    merged.serviceName = llm.serviceName;
+    if (llm.merchantId) merged.merchantId = llm.merchantId;
+  }
   merged.confidence = Math.max(rules.confidence, llm.confidence);
   merged.extractedBy = 'llm';
   return merged;
