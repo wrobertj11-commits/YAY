@@ -26,11 +26,11 @@ const zPatch = z.strictObject({
 });
 
 export function register({ router, store, deps }: RouteDeps) {
-  router.on('GET', '/api/items', {}, ({ user }) => publicItems(store, user, todayFor(deps)));
+  router.on('GET', '/api/items', {}, ({ user }) => publicItems(store, user, todayFor(deps), deps.clock()));
 
   router.on('GET', '/api/items/:id', {}, ({ user, params }) => {
     const item = userItem(store, user, params.id);
-    const alerted = alertedTrialIds(store.itemsFor(user.id), user.plan);
+    const alerted = alertedTrialIds(store.itemsFor(user.id), user.plan, deps.clock(), user.alertPrefs.timeZone);
     const transactions = store.data.transactions
       .filter((t) => t.userId === user.id && (item.transactionIds.includes(t.id) || item.postCancelChargeIds?.includes(t.id)))
       .map(({ id, date, amountCents, description, paymentMethod }) => ({ id, date, amountCents, description, paymentMethod }))

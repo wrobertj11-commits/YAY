@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { config } from '../config.ts';
 import { assert } from '../http.ts';
 import { recompute } from '../pipeline.ts';
+import { revokeAtProvider } from './connections.ts';
 import { publicUser, zState, type RouteDeps } from './shared.ts';
 
 /** Notification settings (channels, quiet hours, time zone) live at PUT /api/me/notifications. */
@@ -24,7 +25,8 @@ export function register({ router, store, deps }: RouteDeps) {
     return publicUser(store, user);
   });
 
-  router.on('DELETE', '/api/me', {}, ({ user }) => {
+  router.on('DELETE', '/api/me', {}, async ({ user, log }) => {
+    for (const conn of store.data.connections.filter((c) => c.userId === user.id)) await revokeAtProvider(conn, log);
     store.audit({ actor: { type: 'user', id: user.id }, userId: user.id, action: 'account.deleted', at: deps.clock().toISOString() });
     store.deleteUser(user.id);
     return { deleted: true };

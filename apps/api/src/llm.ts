@@ -1,7 +1,7 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { zodOutputFormat } from '@anthropic-ai/sdk/helpers/zod';
 import { z } from 'zod';
-import {
+import { receivedDate,
   addDays,
   extractEmailSignal,
   merchantByEmailDomain,
@@ -105,9 +105,9 @@ function truncate(text: string, max: number): string {
 /** Header fields on one line, so a crafted subject can't fake the "Received:" line or extra headers. */
 const oneLine = (s: string) => s.replace(/\s+/g, ' ').trim();
 
-export function renderEmail(email: EmailMessage): string {
+export function renderEmail(email: EmailMessage, receivedAt = email.date.slice(0, 10)): string {
   return [
-    `Received: ${email.date.slice(0, 10)}`,
+    `Received: ${receivedAt}`,
     '',
     `<email_from>${neutralizeDelimiters(oneLine(email.from))}</email_from>`,
     `<email_subject>${neutralizeDelimiters(oneLine(email.subject))}</email_subject>`,
@@ -118,13 +118,13 @@ export function renderEmail(email: EmailMessage): string {
 }
 
 /** The request sent for one email. No `tools`: extraction must stay a pure text-to-JSON call. */
-export function buildExtractionRequest(email: EmailMessage) {
+export function buildExtractionRequest(email: EmailMessage, receivedAt?: string) {
   return {
     model: MODEL,
     max_tokens: 16000,
     system: SYSTEM,
     output_config: { effort: 'low' as const, format: OUTPUT_FORMAT },
-    messages: [{ role: 'user' as const, content: renderEmail(email) }],
+    messages: [{ role: 'user' as const, content: renderEmail(email, receivedAt) }],
   };
 }
 
@@ -143,6 +143,8 @@ export interface ExtractionClient {
 export interface LlmExtractOptions {
   /** Defaults to a shared `new Anthropic()` (credentials from the environment). */
   client?: ExtractionClient;
+  /** The user's IANA zone: relative dates ("in 7 days") count from their calendar day, not UTC's. */
+  timeZone?: string;
 }
 
 let defaultClient: ExtractionClient | undefined;
@@ -261,11 +263,11 @@ function logFailure(err: unknown): void {
 }
 
 export async function llmExtract(email: EmailMessage, opts: LlmExtractOptions = {}): Promise<EmailSignal | undefined> {
-  const receivedAt = email.date.slice(0, 10);
+  const receivedAt = receivedDate(email.date, opts.timeZone);
   let response: Awaited<ReturnType<ExtractionClient['messages']['parse']>>;
   try {
     const client = opts.client ?? (defaultClient ??= new Anthropic());
-    response = await client.messages.parse(buildExtractionRequest(email));
+    response = await client.messages.parse(buildExtractionRequest(email, receivedAt));
   } catch (err) {
     inc('llm_extractions_total', { result: 'error' });
     logFailure(err);

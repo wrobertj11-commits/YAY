@@ -152,10 +152,11 @@ export function createScheduler(store: Store, notifier: Notifier, deps: Pipeline
 
   async function runDaily(now: Date): Promise<string[]> {
     dailyRunning = true;
-    // Recorded before running: a crash mid-run waits for tomorrow instead of crash-looping a heavy re-sync.
-    state.write(now.toISOString());
     const ran: string[] = [];
     try {
+      // Recorded before running: a crash mid-run waits for tomorrow instead of crash-looping a heavy re-sync.
+      // Inside the try so a failed write (disk full, permissions) can't leave dailyRunning stuck on forever.
+      state.write(now.toISOString());
       for (const job of dailyJobs()) {
         try {
           await job.run(store, now);

@@ -64,9 +64,9 @@ export function publicItem(item: TrackedItem, today: string, alerted: Set<string
   };
 }
 
-export function publicItems(store: Store, user: User, today: string) {
+export function publicItems(store: Store, user: User, today: string, now: Date) {
   const items = store.itemsFor(user.id);
-  const alerted = alertedTrialIds(items, user.plan);
+  const alerted = alertedTrialIds(items, user.plan, now, user.alertPrefs.timeZone);
   return items.map((i) => publicItem(i, today, alerted));
 }
 

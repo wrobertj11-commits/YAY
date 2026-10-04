@@ -20,7 +20,8 @@ import { log } from './log.ts';
 import { inc, timed } from './metrics.ts';
 import { decrypt, newId } from './crypto.ts';
 import { llmExtract, mergeSignals } from './llm.ts';
-import { consoleNotifier, dispatchDueAlerts, type Notifier } from './notify.ts';
+import { dispatchOutbox } from './delivery/index.ts';
+import { consoleNotifier, type Notifier } from './notify.ts';
 import { LOGIN_REQUIRED_MESSAGE, PlaidApiError, PlaidBank, sandboxBank, type BankProvider } from './providers/bank.ts';
 import { gmailInbox, outlookInbox, sandboxInbox, type EmailProvider } from './providers/email.ts';
 import type { Connection, Store, StoredSignal, User } from './store.ts';
@@ -28,7 +29,7 @@ import type { Connection, Store, StoredSignal, User } from './store.ts';
 export interface PipelineDeps {
   bank: (c: Connection) => BankProvider;
   inbox: (c: Connection) => EmailProvider;
-  llm?: (email: EmailMessage) => Promise<EmailSignal | undefined>;
+  llm?: (email: EmailMessage, opts?: { timeZone?: string }) => Promise<EmailSignal | undefined>;
   clock: () => Date;
   /** When set, alerts that are already due go out as soon as a sync finishes. */
   notifier?: Notifier;
@@ -53,8 +54,9 @@ export interface SyncSummary {
 /** Extract one email into a stored signal. The body is used here and then goes out of scope. */
 export async function ingestEmail(store: Store, user: User, email: EmailMessage, source: Source, deps: PipelineDeps): Promise<StoredSignal | undefined> {
   if (store.data.signals.some((s) => s.userId === user.id && s.emailId === email.id)) return undefined;
-  let signal = extractEmailSignal(email);
-  if (deps.llm && needsLlmExtraction(signal)) signal = mergeSignals(signal, await deps.llm(email));
+  const timeZone = user.alertPrefs.timeZone;
+  let signal = extractEmailSignal(email, { timeZone });
+  if (deps.llm && needsLlmExtraction(signal)) signal = mergeSignals(signal, await deps.llm(email, { timeZone }));
   if (!signal) return undefined;
   inc('email_signals_total', { extractor: signal.extractedBy, kind: signal.kind, source });
   const stored: StoredSignal = { ...signal, userId: user.id, source };
@@ -117,7 +119,7 @@ export function recompute(store: Store, user: User, deps: Pick<PipelineDeps, 'cl
   const settled = new Set(outbox.filter((a) => a.userId === user.id && a.status !== 'pending').map((a) => a.id));
   const fresh = [
     ...alertsForEvents(events, items, user.plan, now, user.alertPrefs),
-    ...scheduleAlerts(items, user.plan, now, user.alertPrefs),
+    ...scheduleAlerts(items, user.plan, now, user.alertPrefs, settled),
   ].filter((a) => !settled.has(a.id));
   for (const a of fresh) if (!outbox.some((o) => o.id === a.id)) inc('alerts_scheduled_total', { type: a.type });
   const rebuilt = new Set(fresh.map((a) => a.id));
@@ -125,7 +127,21 @@ export function recompute(store: Store, user: User, deps: Pick<PipelineDeps, 'cl
     // Event alerts are built only when their event fires, so one still held (e.g. through quiet hours) survives
     // the rebuild unless this run re-created it or the user has since switched its type or channel off.
     ...outbox.filter((a) => a.userId !== user.id || a.status !== 'pending' || (isEventAlert(a) && !rebuilt.has(a.id) && alertAllowed(a, user.alertPrefs))),
-    ...fresh.map((a) => ({ ...a, userId: user.id, status: 'pending' as const, attempts: 0 })),
+    ...fresh.map((a) => {
+      // A rebuilt row keeps its delivery history: resetting attempts would defeat maxAttempts and Retry-After,
+      // and a row that was already due keeps its send time instead of being re-planned as a later catch-up.
+      const prev = outbox.find((o) => o.id === a.id && o.userId === user.id && o.status === 'pending');
+      const nowIso = now.toISOString();
+      return {
+        ...a,
+        userId: user.id,
+        status: 'pending' as const,
+        attempts: prev?.attempts ?? 0,
+        ...(prev?.nextAttemptAt ? { nextAttemptAt: prev.nextAttemptAt } : {}),
+        ...(prev?.lastError ? { lastError: prev.lastError } : {}),
+        ...(prev && prev.sendAt <= nowIso && a.sendAt > prev.sendAt ? { sendAt: prev.sendAt } : {}),
+      };
+    }),
   ];
 
   if (!user.firstFoundAt && items.length) user.firstFoundAt = now.toISOString();
@@ -162,7 +178,8 @@ async function runSync(store: Store, user: User, deps: PipelineDeps): Promise<Sy
   const { events, newItems } = recompute(store, user, deps);
   user.lastSyncAt = deps.clock().toISOString();
   // A trial found inside its 48h window should warn the user now, not on the next tick.
-  if (deps.notifier) await dispatchDueAlerts(store, deps.notifier, deps.clock());
+  // Live clock: claims and lease ages must use real time, or a long run's claims look expired and get re-sent.
+  if (deps.notifier) await dispatchOutbox(store, deps.notifier, { clock: deps.clock });
   store.save();
   const items = store.itemsFor(user.id).filter((i) => i.status !== 'dismissed');
   return {

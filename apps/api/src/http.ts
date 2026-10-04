@@ -212,7 +212,12 @@ export class Router {
       }
 
       const m = route.pattern.exec(url.pathname);
-      const params = Object.fromEntries(route.keys.map((k, i) => [k, decodeURIComponent(m?.[i + 1] ?? '')]));
+      let params: Record<string, string>;
+      try {
+        params = Object.fromEntries(route.keys.map((k, i) => [k, decodeURIComponent(m?.[i + 1] ?? '')]));
+      } catch {
+        throw new HttpError(400, 'Malformed URL');
+      }
 
       const limitName = opts.limit ?? 'default';
       const limitKey = opts.limitKey?.({ ip, user, params }) ?? user?.id ?? ip;

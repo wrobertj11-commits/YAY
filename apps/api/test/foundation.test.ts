@@ -15,6 +15,7 @@ const { StaticKeyring, seal, unseal, needsRotation } = await import('../src/keyr
 const { redact, scrub } = await import('../src/log.ts');
 const { renderPrometheus, inc } = await import('../src/metrics.ts');
 const { assertNodeVersion } = await import('../src/config.ts');
+const { normalizeAlertPrefs } = await import('@trialguard/core');
 const { clientIp } = await import('../src/http.ts');
 
 const deps = { ...defaultDeps, llm: undefined, notifier: undefined, clock: () => new Date('2026-10-03T15:00:00Z') };
@@ -36,7 +37,9 @@ describe('router', () => {
   before(async () => {
     // Tight auth bucket so the limiter test is quick.
     const limiter = new RateLimiter({ auth: { capacity: 3, per: 60 }, default: { capacity: 1000, per: 60 } });
-    server = createServer(createApp(new Store(), deps, limiter));
+    const store = new Store();
+    store.data.users.push({ id: 'u-fnd', email: 'fnd@example.com', token: 'tok-fnd', plan: 'free', forwardToken: 'fnd', createdAt: '2026-10-01T00:00:00Z', alertPrefs: normalizeAlertPrefs({}) });
+    server = createServer(createApp(store, deps, limiter));
     await new Promise<void>((r) => server.listen(0, r));
     base = `http://localhost:${(server.address() as AddressInfo).port}`;
   });
@@ -73,6 +76,11 @@ describe('router', () => {
     assert.equal((await fetch(`${base}/readyz`)).status, 200);
     const metrics = await (await fetch(`${base}/metrics`)).text();
     assert.match(metrics, /http_requests_total/);
+  });
+
+  it('answers a malformed percent-encoding in a path with 400, not 500', async () => {
+    const res = await fetch(`${base}/api/items/%E0%A4%A`, { headers: { Authorization: 'Bearer tok-fnd' } });
+    assert.equal(res.status, 400);
   });
 
   it('returns 405 for a known path with the wrong method', async () => {

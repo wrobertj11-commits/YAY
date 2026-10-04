@@ -259,7 +259,7 @@ describe('LLM results never decide an action alone', () => {
     const stored = await ingestEmail(store, user, email, 'email', deps);
     assert.equal(stored?.extractedBy, 'llm');
     recompute(store, user, deps);
-    const [item] = publicItems(store, user, RECEIVED);
+    const [item] = publicItems(store, user, RECEIVED, deps.clock());
     assert.equal(item?.name, 'Zapflix Pro');
     assert.equal(item?.needsReview, true);
   });

@@ -6,6 +6,7 @@ import {
   alertAllowed,
   alertsForEvents,
   chargeInstant,
+  alertedTrialIds,
   createManualItem,
   isEventAlert,
   localDate,
@@ -359,3 +360,13 @@ function at0(alerts: Alert[]): Alert {
   assert.ok(a, 'expected at least one alert');
   return a;
 }
+
+describe('Free trial cap ignores trials that already ended', () => {
+  it('an ended trial still awaiting its bank charge does not take a live trial\'s slot', () => {
+    const now = new Date('2026-10-04T15:00:00Z');
+    const t = (id: string, ends: string) => createManualItem({ name: id, amountCents: 999, cadence: 'monthly', date: ends, isTrial: true }, id, '2026-09-01T00:00:00Z');
+    const items = [t('ended-oct2', '2026-10-02'), t('ended-oct3', '2026-10-03'), t('live-oct6', '2026-10-06'), t('live-oct7', '2026-10-07')];
+    const ids = alertedTrialIds(items, 'free', now, 'America/New_York');
+    assert.deepEqual([...ids].sort(), ['live-oct6', 'live-oct7']);
+  });
+});

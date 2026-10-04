@@ -67,11 +67,16 @@ function catchUpAt(now: Date, due: Date, prefs: AlertPrefs): Date {
   return now;
 }
 
-/** Trials that get alerts under the plan: the soonest-ending ones, up to the plan's cap. */
-export function alertedTrialIds(items: TrackedItem[], plan: Plan): Set<string> {
+/**
+ * Trials that get alerts under the plan: the soonest-ending ones, up to the plan's cap. With `now`, trials whose
+ * conversion moment has passed don't count: reconcile keeps them as 'trial' for a few days while it waits for the
+ * bank charge, and they must not use up a Free slot that a live trial needs.
+ */
+export function alertedTrialIds(items: TrackedItem[], plan: Plan, now?: Date, timeZone = 'UTC'): Set<string> {
   const cap = entitlements(plan).maxTrialAlerts;
   const trials = items
     .flatMap((i) => (i.status === 'trial' && i.trialEndsAt ? [{ id: i.id, endsAt: i.trialEndsAt }] : []))
+    .filter((t) => !now || chargeInstant(t.endsAt, timeZone) > now)
     .sort((a, b) => a.endsAt.localeCompare(b.endsAt));
   return new Set(trials.slice(0, cap).map((t) => t.id));
 }
@@ -87,13 +92,22 @@ export function alertedTrialIds(items: TrackedItem[], plan: Plan): Set<string> {
  *   quiet hours end if that is still CATCH_UP_MIN_LEAD_HOURS before due. It keeps the earliest missed lead's id,
  *   so re-running never adds a second catch-up for the same item and date.
  * - A type switched off in prefs gets no alerts; channels come from prefs.push / prefs.email.
+ * - `settled` holds ids already sent (or claimed, failed, skipped). A lead whose alerts are all settled is done:
+ *   it is skipped without using the catch-up slot, so the next lead is still scheduled. Without this, a sent 48h
+ *   alert would take the slot and the pending 24h alert would vanish on the next rebuild.
  */
-export function scheduleAlerts(items: TrackedItem[], plan: Plan, now: Date, prefs: AlertPrefs = DEFAULT_ALERT_PREFS): Alert[] {
+export function scheduleAlerts(
+  items: TrackedItem[],
+  plan: Plan,
+  now: Date,
+  prefs: AlertPrefs = DEFAULT_ALERT_PREFS,
+  settled: ReadonlySet<string> = new Set(),
+): Alert[] {
   // Prefs come from storage and clients; a malformed zone or window must not take scheduling down for everyone.
   const p = normalizeAlertPrefs(prefs);
   const sendOn = channels(p);
   const alerts: Alert[] = [];
-  const trialIds = alertedTrialIds(items, plan);
+  const trialIds = alertedTrialIds(items, plan, now, p.timeZone);
 
   for (const item of items) {
     const isTrial = item.status === 'trial';
@@ -112,6 +126,8 @@ export function scheduleAlerts(items: TrackedItem[], plan: Plan, now: Date, pref
 
     let firedLate = false;
     for (const lead of ALERT_LEAD_HOURS) {
+      const idFor = (channel: AlertChannel) => `${item.id}:${isTrial ? 'trial' : 'renewal'}:${date}:${lead}:${channel}`;
+      if (sendOn.length && sendOn.every((channel) => settled.has(idFor(channel)))) continue;
       let sendAt = beforeQuietHours(new Date(due.getTime() - lead * HOUR_MS), p);
       let catchUp = false;
       if (sendAt < now) {
@@ -124,7 +140,7 @@ export function scheduleAlerts(items: TrackedItem[], plan: Plan, now: Date, pref
       const when = timeLeft(sendAt, due);
       for (const channel of sendOn) {
         alerts.push({
-          id: `${item.id}:${isTrial ? 'trial' : 'renewal'}:${date}:${lead}:${channel}`,
+          id: idFor(channel),
           itemId: item.id,
           type,
           channel,

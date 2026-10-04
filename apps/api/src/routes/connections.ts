@@ -4,6 +4,7 @@ import { decrypt, encrypt, newId } from '../crypto.ts';
 import { assert } from '../http.ts';
 import { PlaidBank } from '../providers/bank.ts';
 import { syncUser } from '../pipeline.ts';
+import type { Logger } from '../log.ts';
 import type { Connection } from '../store.ts';
 import { emailFilterDescription } from './privacy.ts';
 import { publicConnection, zText, type RouteDeps } from './shared.ts';
@@ -14,6 +15,20 @@ const zConnect = z.union([
   z.strictObject({ mode: z.literal('live'), type: z.literal('bank'), publicToken: z.string().min(1).max(512), label: zLabel }),
   z.strictObject({ mode: z.literal('live'), type: z.enum(['gmail', 'outlook']), accessToken: z.string().min(1).max(4096), label: zLabel }),
 ]);
+
+/**
+ * Revokes our access at the provider so a bank link doesn't outlive the connection (and Plaid stops billing for
+ * the Item). Best effort: a provider outage must not stop the user from disconnecting or deleting their
+ * account, and our copy of the token is deleted either way.
+ */
+export async function revokeAtProvider(conn: Connection, log: Logger): Promise<void> {
+  if (conn.provider !== 'plaid' || !conn.sealedToken || !PlaidBank.configured()) return;
+  try {
+    await new PlaidBank().removeItem(decrypt(conn.sealedToken));
+  } catch (err) {
+    log.warn('plaid item removal failed', { connectionId: conn.id, err });
+  }
+}
 
 export function register({ router, store, deps }: RouteDeps) {
   router.on('GET', '/api/connections/email-filter', { auth: 'none' }, () => ({
@@ -72,15 +87,7 @@ export function register({ router, store, deps }: RouteDeps) {
   router.on('DELETE', '/api/connections/:id', {}, async ({ user, params, log }) => {
     const conn = store.data.connections.find((c) => c.id === params.id && c.userId === user.id);
     assert(conn, 'Connection not found', 404);
-    // Revoke our access at Plaid too, so the bank link doesn't outlive the connection. Best effort:
-    // a Plaid outage must not stop the user from disconnecting, and the token is deleted either way.
-    if (conn.provider === 'plaid' && conn.sealedToken && PlaidBank.configured()) {
-      try {
-        await new PlaidBank().removeItem(decrypt(conn.sealedToken));
-      } catch (err) {
-        log.warn('plaid item removal failed', { connectionId: conn.id, err });
-      }
-    }
+    await revokeAtProvider(conn, log);
     store.data.connections = store.data.connections.filter((c) => c !== conn);
     // Disconnecting removes the raw data that came through it.
     store.data.transactions = store.data.transactions.filter((t) => t.connectionId !== conn.id);

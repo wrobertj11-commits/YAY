@@ -177,3 +177,11 @@ describe('spoofed cancellation emails', () => {
     assert.equal(only(items).status, 'active');
   });
 });
+
+describe('extraction cost on hostile input', () => {
+  it('stays linear on long digit runs (no regex backtracking blow-up)', () => {
+    const started = performance.now();
+    extractEmailSignal({ id: 'dos', from: 'a@b.com', subject: 'Your free trial', date: '2026-10-01T00:00:00Z', body: '1'.repeat(200_000) });
+    assert.ok(performance.now() - started < 500, `took ${Math.round(performance.now() - started)} ms`);
+  });
+});

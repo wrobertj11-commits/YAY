@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { generateKeyPairSync, verify, type KeyObject } from 'node:crypto';
-import { mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { createServer, type Server } from 'node:http';
 import { createServer as createH2Server, type Http2Server } from 'node:http2';
 import type { AddressInfo } from 'node:net';
@@ -959,5 +959,33 @@ describe('devices, notification settings and unsubscribe (HTTP)', () => {
     }
     assert.equal((await call('POST', '/api/unsubscribe', 'List-Unsubscribe=One-Click', '')).status, 400, 'missing token');
     assert.equal(bobUser.emailUnsubscribedAt, before);
+  });
+});
+
+describe('daily jobs survive a failed state write', () => {
+  it('a write error skips that tick instead of switching daily jobs off until restart', async () => {
+    const lockFile = path.join(scratch, 'jobs-write-fail.lock');
+    const store = fixture();
+    let now = T0;
+    const deps = { ...defaultDeps, llm: undefined, notifier: undefined, clock: () => now };
+    const runs: string[] = [];
+    const sched = createScheduler(store, recorder().notifier, deps, { instanceId: 'w', lockFile, daily: [{ name: 'probe', run: () => void runs.push(now.toISOString()) }] });
+    await sched.tick(); // first start records the 24h clock
+
+    // Make the next state write fail: its temp path is a directory.
+    const tmp = `${lockFile}.state.json.${process.pid}.tmp`;
+    mkdirSync(tmp);
+    now = at(24 * 3_600_000);
+    sched.heartbeat();
+    await sched.tick();
+    assert.deepEqual(runs, [], 'nothing ran while the state could not be recorded');
+
+    rmSync(tmp, { recursive: true });
+    now = at(24 * 3_600_000 + 60_000);
+    sched.heartbeat();
+    const t = await sched.tick();
+    assert.ok(t.daily?.includes('probe'), 'the next tick runs the daily jobs');
+    assert.equal(runs.length, 1);
+    sched.stop();
   });
 });

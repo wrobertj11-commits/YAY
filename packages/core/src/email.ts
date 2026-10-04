@@ -1,4 +1,5 @@
 import { addDays, addMonths, toISODate } from './dates.ts';
+import { localDate } from './tz.ts';
 import { merchantByEmailDomain, merchantByName } from './merchants.ts';
 import { parseMoney } from './money.ts';
 import type { Cadence, EmailMessage, EmailSignal, EmailSignalKind, ISODate } from './types.ts';
@@ -131,7 +132,9 @@ const CADENCE_WORDS: [RegExp, Cadence][] = [
 
 export function findPrices(text: string): FoundPrice[] {
   const out: FoundPrice[] = [];
-  const re = /(?:US)?\$\s?(\d[\d,]*(?:\.\d{1,2})?)|(\d[\d,]*\.\d{2})\s?(?:USD|dollars)/gi;
+  // The lookbehind makes the bare-number branch start only at the beginning of a digit run; without it the engine
+  // retries from every digit of a long run, which is quadratic (a 100k-digit email body blocked the server ~5s).
+  const re = /(?:US)?\$\s?(\d[\d,]*(?:\.\d{1,2})?)|(?<![\d,.])(\d[\d,]*\.\d{2})\s?(?:USD|dollars)/gi;
   for (let m = re.exec(text); m; m = re.exec(text)) {
     const cents = parseMoney(m[1] ?? m[2] ?? '');
     if (cents === undefined || cents === 0) continue;
@@ -214,8 +217,10 @@ function classify(subject: string, body: string): EmailSignalKind | undefined {
  * Rules-first extraction (detection pipeline step 3). Returns undefined when the email is not a
  * subscription email. Low-confidence results are candidates for the LLM extraction step.
  */
-export function extractEmailSignal(email: EmailMessage): EmailSignal | undefined {
-  const receivedAt = email.date.slice(0, 10);
+export function extractEmailSignal(email: EmailMessage, opts: { timeZone?: string } = {}): EmailSignal | undefined {
+  // The user's calendar date when the mail arrived: providers stamp UTC, and "7-day trial" counts from the
+  // user's own day (an evening sign-up in Los Angeles is already tomorrow in UTC).
+  const receivedAt = receivedDate(email.date, opts.timeZone);
   const text = `${email.subject}\n${email.body}`.replace(/\s+/g, ' ');
   const kind = classify(email.subject, email.body);
   if (!kind) return undefined;
@@ -284,6 +289,17 @@ export function extractEmailSignal(email: EmailMessage): EmailSignal | undefined
 
   signal.confidence = Math.round(Math.min(0.95, confidence) * 100) / 100;
   return signal;
+}
+
+/** Calendar date of a received timestamp in the user's zone (UTC when no zone is given, as stored). */
+export function receivedDate(isoTimestamp: string, timeZone?: string): ISODate {
+  const at = new Date(isoTimestamp);
+  if (!timeZone || Number.isNaN(at.getTime())) return isoTimestamp.slice(0, 10);
+  try {
+    return localDate(at, timeZone);
+  } catch {
+    return isoTimestamp.slice(0, 10);
+  }
 }
 
 /** Extraction is "complete enough" when the fields the alert depends on are present. */

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { normalizeAlertPrefs, type Transaction } from '@trialguard/core';
+import { createManualItem, normalizeAlertPrefs, type Transaction } from '@trialguard/core';
 
 process.env.TRIALGUARD_DISABLE_LLM = '1';
 process.env.TRIALGUARD_JOBS = '0';
@@ -85,5 +85,63 @@ describe('pipeline + scheduling integration', () => {
     const counting = { async sync(): Promise<never> { calls++; throw new Error('should not be called'); } };
     await syncUser(store, user, { ...deps, bank: () => counting });
     assert.equal(calls, 0);
+  });
+});
+
+describe('scheduled alerts across rebuilds', () => {
+  const NY = 'America/New_York';
+  function trialUser(id: string) {
+    const store = new Store();
+    const user = {
+      id,
+      email: `${id}@example.com`,
+      token: `t-${id}`,
+      plan: 'plus' as const,
+      forwardToken: `f-${id}`,
+      createdAt: '2026-10-01T00:00:00Z',
+      alertPrefs: normalizeAlertPrefs({ push: true, email: false, timeZone: NY, quietHours: null }),
+    };
+    store.data.users.push(user);
+    const item = createManualItem({ name: 'Headspace', merchantId: 'headspace', amountCents: 6999, cadence: 'annual', date: '2026-10-10', isTrial: true }, `trial-${id}`, '2026-10-01T00:00:00Z');
+    store.data.items.push({ ...item, userId: id });
+    return { store, user };
+  }
+  const row = (store: InstanceType<typeof Store>, lead: number) => store.data.alerts.find((a) => a.leadHours === lead && a.type === 'trial_converting');
+
+  it('keeps the pending 24h alert after the 48h one was sent', () => {
+    const { store, user } = trialUser('r1');
+    recompute(store, user, { clock: () => new Date('2026-10-07T12:00:00Z') });
+    const h48 = row(store, 48);
+    assert.ok(h48);
+    h48.status = 'sent';
+    h48.sentAt = h48.sendAt;
+    const h24 = row(store, 24);
+    assert.ok(h24);
+    // A rebuild 30 s after the 24h send time (between dispatcher ticks) must not drop it.
+    recompute(store, user, { clock: () => new Date(new Date(h24.sendAt).getTime() + 30_000) });
+    assert.equal(row(store, 24)?.status, 'pending');
+  });
+
+  it('keeps retry state when a pending alert is rebuilt', () => {
+    const { store, user } = trialUser('r2');
+    recompute(store, user, { clock: () => new Date('2026-10-07T12:00:00Z') });
+    const h48 = row(store, 48);
+    assert.ok(h48);
+    const due = new Date(h48.sendAt).getTime();
+    Object.assign(h48, { attempts: 3, nextAttemptAt: new Date(due + 3_600_000).toISOString(), lastError: 'Postmark 429' });
+    recompute(store, user, { clock: () => new Date(due + 5 * 60_000) });
+    const after = row(store, 48);
+    assert.equal(after?.attempts, 3);
+    assert.equal(after?.nextAttemptAt, new Date(due + 3_600_000).toISOString());
+    assert.equal(after?.sendAt, new Date(due).toISOString(), 'not re-planned as a later catch-up');
+  });
+});
+
+describe('trial dates from email follow the user\'s calendar day', () => {
+  it('an evening sign-up in Los Angeles counts from the local date, not UTC', async () => {
+    const { extractEmailSignal } = await import('@trialguard/core');
+    const email = { id: 'e1', from: 'Headspace <hello@headspace.com>', subject: 'Your 7-day free trial has started', body: 'Enjoy your 7 day free trial. Then $12.99/month.', date: '2026-10-04T01:00:00Z' };
+    assert.equal(extractEmailSignal(email)?.chargeDate, '2026-10-11', 'UTC day (no zone known)');
+    assert.equal(extractEmailSignal(email, { timeZone: 'America/Los_Angeles' })?.chargeDate, '2026-10-10');
   });
 });
