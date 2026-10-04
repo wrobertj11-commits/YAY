@@ -1,0 +1,39 @@
+{
+  "$comment": "Rules-only metrics recorded by `npm run eval -- --update-baseline`. CI fails when a metric drops by more than `tolerance` or a dataset fingerprint changes.",
+  "tolerance": 0.01,
+  "datasets": {
+    "recurring": "f681d1794b68b14c",
+    "emails": "e5f51a491a285952",
+    "e2e": "060ac63cffb99653"
+  },
+  "metrics": {
+    "recurring.precision": 0.75,
+    "recurring.recall": 0.8571,
+    "recurring.f1": 0.8,
+    "recurring.field.merchant": 0.9667,
+    "recurring.field.cadence": 1,
+    "recurring.field.amountCents": 1,
+    "recurring.field.nextChargeDate": 0.9333,
+    "recurring.negativePass": 0.5,
+    "recurring.casePass": 0.6531,
+    "emails.kind.accuracy": 0.8356,
+    "emails.kind.macroF1": 0.8071,
+    "emails.trial.precision": 0.9063,
+    "emails.trial.recall": 0.9667,
+    "emails.trial.f1": 0.9355,
+    "emails.detect.precision": 0.873,
+    "emails.detect.recall": 0.9821,
+    "emails.detect.f1": 0.9244,
+    "emails.field.merchant": 0.9107,
+    "emails.field.priceCents": 0.88,
+    "emails.field.oldPriceCents": 0.6667,
+    "emails.field.cadence": 0.7872,
+    "emails.field.trialDays": 0.8077,
+    "emails.field.chargeDate": 0.8049,
+    "emails.field.effectiveDate": 0.8333,
+    "emails.gate.recall": 1,
+    "emails.casePass": 0.5342,
+    "e2e.scenarioPass": 0.75,
+    "e2e.checkPass": 0.9
+  }
+}
