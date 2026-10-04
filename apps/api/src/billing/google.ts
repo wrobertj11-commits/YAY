@@ -2,7 +2,7 @@ import { z } from 'zod';
 import type { Logger } from '../log.ts';
 import { inc } from '../metrics.ts';
 import type { PipelineDeps } from '../pipeline.ts';
-import type { Store } from '../store.ts';
+import type { BillingSubscription, Store } from '../store.ts';
 import {
   applyEntitlements,
   findSubscription,
@@ -11,6 +11,7 @@ import {
   userByBillingToken,
   userById,
   type SubscriptionStatus,
+  type SubscriptionUpdate,
 } from './entitlement.ts';
 import { BillingRejection } from './errors.ts';
 import { verifyPushToken, type AccessTokenSource, type JwksSource, type PushAuthPolicy } from './googleAuth.ts';
@@ -182,11 +183,43 @@ function decodeNotification(data: string): DeveloperNotification {
 }
 
 /**
+ * A Play purchase's fresh state as an update to its record. A voided purchase stays refunded until Play
+ * reports a later paid period: Play may go on describing the refunded period as active (cancelled).
+ */
+function recordUpdate(
+  existing: BillingSubscription | undefined,
+  purchaseToken: string,
+  sub: PlaySubscription,
+  status: SubscriptionStatus,
+  userId: string,
+  notifiedProductId?: string,
+): SubscriptionUpdate {
+  const line = latestLineItem(sub);
+  const productId = line?.productId ?? notifiedProductId ?? existing?.productId;
+  if (!productId) throw new PlayApiError(502, 'Play subscription has no product');
+  const refundedPeriod = existing?.status === 'refunded' && !(line?.expiresAt && existing.expiresAt && line.expiresAt > existing.expiresAt);
+  return {
+    platform: 'google_play',
+    externalId: purchaseToken,
+    userId,
+    productId,
+    status: refundedPeriod ? 'refunded' : status,
+    expiresAt: line?.expiresAt,
+    // Play extends expiryTime through the grace period, so it is also the grace deadline.
+    gracePeriodExpiresAt: status === 'grace_period' ? line?.expiresAt : undefined,
+    autoRenew: line?.autoRenew,
+    environment: sub.testPurchase ? 'test' : 'production',
+  };
+}
+
+/**
  * Builds the RTDN handler. It keeps the set of message ids in flight, because processing awaits the Play
  * API and Pub/Sub may redeliver meanwhile; a message is marked processed only after it fully succeeds.
  */
 export function createRtdnHandler(store: Store, google: GoogleBillingConfig, deps: Clock) {
   const inFlight = new Set<string>();
+  /** Tail of the work queued per purchase token (see oneAtATime). An entry goes once its queue drains. */
+  const queues = new Map<string, Promise<void>>();
 
   return async function handleRtdn(authorization: string | undefined, body: PubSubPush, log: Logger): Promise<GoogleOutcome> {
     const now = deps.clock();
@@ -212,9 +245,28 @@ export function createRtdnHandler(store: Store, google: GoogleBillingConfig, dep
 
   async function apply(n: DeveloperNotification, log: Logger): Promise<GoogleOutcome> {
     if (n.voidedPurchaseNotification) return voided(n.voidedPurchaseNotification, log);
-    if (n.subscriptionNotification) return subscriptionChanged(n.subscriptionNotification.purchaseToken, n.subscriptionNotification.subscriptionId, log);
+    const s = n.subscriptionNotification;
+    if (s) return oneAtATime(s.purchaseToken, () => subscriptionChanged(s.purchaseToken, s.subscriptionId, log));
     log.info('play notification ignored', { kind: notificationKind(n) });
     return { result: 'ignored' };
+  }
+
+  /**
+   * Runs `task` once every earlier task for the same purchase token has settled. Each notification reads
+   * Play, then writes; two for one purchase (renewed, then cancelled) run side by side could finish in the
+   * wrong order and leave the older read in the record. One at a time, each read is at least as new.
+   */
+  function oneAtATime<T>(purchaseToken: string, task: () => Promise<T>): Promise<T> {
+    const run = (queues.get(purchaseToken) ?? Promise.resolve()).then(task);
+    const tail = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    queues.set(purchaseToken, tail);
+    void tail.then(() => {
+      if (queues.get(purchaseToken) === tail) queues.delete(purchaseToken);
+    });
+    return run;
   }
 
   /** A refund, chargeback or revocation. Final for the period it covered, whatever the order of arrival. */
@@ -230,14 +282,39 @@ export function createRtdnHandler(store: Store, google: GoogleBillingConfig, dep
     return { result: 'processed', recordId: updated.id, status: updated.status, acknowledged: false };
   }
 
+  /**
+   * The current state of the purchase an abandoned upgrade or resubscribe links to. When a pending purchase
+   * is cancelled, the one it would have replaced carries on, and Play's guidance is to read it again through
+   * linkedPurchaseToken: that restores a record retired too early and picks up anything that changed while
+   * the new purchase was pending. Undefined when there is no record of ours to restore.
+   */
+  async function abandonedReplacement(sub: PlaySubscription, log: Logger): Promise<PlaySubscription | undefined> {
+    const token = sub.linkedPurchaseToken;
+    if (sub.subscriptionState !== 'SUBSCRIPTION_STATE_PENDING_PURCHASE_CANCELED' || !token) return undefined;
+    if (!findSubscription(store, 'google_play', token)) return undefined;
+    try {
+      return await google.play.getSubscription(google.packageName, token);
+    } catch (err) {
+      // Play stops answering for a purchase a while after it ends (410 Gone). There is nothing to restore
+      // then, and retrying would only hold this notification up forever.
+      if (err instanceof PlayApiError && (err.status === 404 || err.status === 410)) {
+        log.info('linked play purchase is gone, nothing to restore', { status: err.status });
+        return undefined;
+      }
+      throw err;
+    }
+  }
+
   async function subscriptionChanged(purchaseToken: string, notifiedProductId: string | undefined, log: Logger): Promise<GoogleOutcome> {
     const sub = await google.play.getSubscription(google.packageName, purchaseToken);
-    const now = deps.clock();
     const status = playStatus(sub.subscriptionState);
     if (!status) {
       log.warn('unknown play subscription state', { state: sub.subscriptionState });
       return { result: 'ignored' };
     }
+    const linkedSub = await abandonedReplacement(sub, log);
+    // Synchronous from here to the writes, so the records read below are current when written.
+    const now = deps.clock();
     const existing = findSubscription(store, 'google_play', purchaseToken);
     const linked = sub.linkedPurchaseToken ? findSubscription(store, 'google_play', sub.linkedPurchaseToken) : undefined;
     // obfuscatedExternalAccountId is what the app set at purchase; an upgrade or resubscribe can also be
@@ -250,45 +327,41 @@ export function createRtdnHandler(store: Store, google: GoogleBillingConfig, dep
       return { result: 'unlinked' };
     }
 
-    const line = latestLineItem(sub);
-    const productId = line?.productId ?? notifiedProductId ?? existing?.productId;
-    if (!productId) throw new PlayApiError(502, 'Play subscription has no product');
-    // A voided purchase stays refunded until Play reports a later paid period.
-    const refundedPeriod = existing?.status === 'refunded' && !(line?.expiresAt && existing.expiresAt && line.expiresAt > existing.expiresAt);
-
-    const { record, previousUserId } = upsertSubscription(
-      store,
-      {
-        platform: 'google_play',
-        externalId: purchaseToken,
-        userId: user.id,
-        productId,
-        status: refundedPeriod ? 'refunded' : status,
-        expiresAt: line?.expiresAt,
-        // Play extends expiryTime through the grace period, so it is also the grace deadline.
-        gracePeriodExpiresAt: status === 'grace_period' ? line?.expiresAt : undefined,
-        autoRenew: line?.autoRenew,
-        environment: sub.testPurchase ? 'test' : 'production',
-      },
-      now,
-    );
-
-    // The old purchase of an upgrade, downgrade or resubscribe is replaced by this one.
+    const { record, previousUserId } = upsertSubscription(store, recordUpdate(existing, purchaseToken, sub, status, user.id, notifiedProductId), now);
     const affected = [user.id, previousUserId];
-    if (linked && linked.id !== record.id && linked.status !== 'expired') {
-      upsertSubscription(store, { ...linked, status: 'expired', eventAt: undefined }, now);
-      affected.push(linked.userId);
+    if (linked && linked.id !== record.id) {
+      if (linkedSub) {
+        restoreLinked(linked, linkedSub, now, log);
+        affected.push(linked.userId);
+      } else if (isEntitled(record, now) && linked.status !== 'expired') {
+        // The old purchase of an upgrade, downgrade or resubscribe is replaced by this one, but only once
+        // this one grants access itself: while a payment is pending (e.g. cash at a store), the old
+        // purchase is still what the user has paid for.
+        upsertSubscription(store, { ...linked, status: 'expired', eventAt: undefined }, now);
+        affected.push(linked.userId);
+      }
     }
     applyEntitlements(store, affected, deps, 'google_play');
 
     let acknowledged = false;
     if (sub.acknowledgementState === 'ACKNOWLEDGEMENT_STATE_PENDING' && isEntitled(record, now)) {
       // A failure throws, so the message isn't marked processed and Pub/Sub's retry acknowledges again.
-      await google.play.acknowledge(google.packageName, productId, purchaseToken);
+      await google.play.acknowledge(google.packageName, record.productId, purchaseToken);
       acknowledged = true;
       inc('billing_play_acknowledged_total');
     }
     return { result: 'processed', recordId: record.id, status: record.status, acknowledged };
+  }
+
+  /** Writes Play's fresh word on the purchase an abandoned upgrade linked to. It stays with its own account. */
+  function restoreLinked(linked: BillingSubscription, sub: PlaySubscription, now: Date, log: Logger): void {
+    const status = playStatus(sub.subscriptionState);
+    if (!status) {
+      log.warn('unknown play subscription state', { state: sub.subscriptionState });
+      return;
+    }
+    const { record } = upsertSubscription(store, recordUpdate(linked, linked.externalId, sub, status, linked.userId), now);
+    log.info('pending play purchase abandoned, linked purchase re-read', { recordId: record.id, status: record.status });
   }
 }
 

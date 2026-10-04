@@ -4,6 +4,7 @@ import { readFileSync } from 'node:fs';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { after, before, beforeEach, describe, it } from 'node:test';
+import type { PlayApi } from '../src/billing/google.ts';
 
 process.env.TRIALGUARD_DISABLE_LLM = '1';
 process.env.TRIALGUARD_JOBS = '0';
@@ -18,7 +19,8 @@ const { verifyAppleChain, JwsError, parseCertificates } = await import('../src/b
 const { decodeOid, extensionOids } = await import('../src/billing/der.ts');
 const { planFromRecords, sweepExpiredSubscriptions, isEntitled } = await import('../src/billing/entitlement.ts');
 const { googleJwks, maxAgeMs, GOOGLE_JWKS_URL } = await import('../src/billing/googleAuth.ts');
-const { playApi } = await import('../src/billing/google.ts');
+const { playApi, createRtdnHandler } = await import('../src/billing/google.ts');
+const { log } = await import('../src/log.ts');
 const { serviceAccountTokens, ANDROID_PUBLISHER_SCOPE } = await import('../src/billing/googleAuth.ts');
 const { billingFromEnv } = await import('../src/billing/config.ts');
 
@@ -401,6 +403,128 @@ describe('App Store Server Notifications V2', () => {
     assert.equal((await call(base, 'POST', '/api/billing/apple/verify', { signedTransaction: tx(token) })).status, 401);
   });
 
+  /** A StoreKit signed transaction, as the app sends it to /verify; signed after everything before it. */
+  function storeKitTx(tx: Record<string, unknown>) {
+    signedAt += 1000;
+    return appleJws({ transactionId: randomUUID(), bundleId: BUNDLE, environment: 'Production', type: 'Auto-Renewable Subscription', productId: 'plus_monthly', signedDate: signedAt, ...tx });
+  }
+  const verifyAs = (user: { token: string }, signedTransaction: string) =>
+    call(base, 'POST', '/api/billing/apple/verify', { signedTransaction }, { Authorization: `Bearer ${user.token}` });
+  const recordFor = (otid: string) => store.data.billing.find((b) => b.platform === 'app_store' && b.externalId === otid);
+
+  it('OFFER_REDEEMED for an in-app offer purchase turns Plus on from the notification alone', async () => {
+    const user = addUser(store);
+    const token = (await call(base, 'GET', '/api/billing/status', undefined, { Authorization: `Bearer ${user.token}` })).json.billingAccountToken as string;
+    const otid = `offer-${randomUUID()}`;
+    const r = await post(notify('OFFER_REDEEMED', { originalTransactionId: otid, appAccountToken: token, expiresDate: at(30 * DAY) }, { subtype: 'INITIAL_BUY', renewal: { autoRenewStatus: 1 } }));
+    assert.equal(r.json.result, 'processed');
+    assert.equal(user.plan, 'plus');
+    assert.equal(recordFor(otid)?.status, 'active');
+  });
+
+  it('an offer code redeemed outside the app is claimed through /verify, and later notifications follow the claim', async () => {
+    const user = addUser(store);
+    const otid = `offer-${randomUUID()}`;
+    const firstExpiry = at(30 * DAY);
+    // Redeemed in the App Store: Apple has no appAccountToken, so the notification can't find the account.
+    const redeemed = await post(notify('OFFER_REDEEMED', { originalTransactionId: otid, expiresDate: firstExpiry }, { subtype: 'INITIAL_BUY', renewal: { autoRenewStatus: 1 } }));
+    assert.equal(redeemed.json.result, 'unlinked');
+    assert.equal(user.plan, 'free');
+
+    // The app sees the purchase in Transaction.updates and sends it in.
+    const claim = await verifyAs(user, storeKitTx({ originalTransactionId: otid, expiresDate: firstExpiry }));
+    assert.equal(claim.status, 200);
+    assert.equal(claim.json.plan, 'plus');
+    assert.equal(user.plan, 'plus');
+    const record = recordFor(otid);
+    assert.equal(record?.userId, user.id);
+    assert.ok(store.data.audit.some((a) => a.action === 'billing.subscription_claimed' && a.actor.type === 'user' && a.actor.id === user.id && a.subject?.id === record?.id));
+
+    // The paid period runs out, then Apple renews it. The renewal carries no token either, yet reaches the claimant.
+    now = new Date(firstExpiry + DAY);
+    sweepExpiredSubscriptions(store, now);
+    assert.equal(user.plan, 'free');
+    const renewed = await post(notify('DID_RENEW', { originalTransactionId: otid, expiresDate: at(30 * DAY) }, { renewal: { autoRenewStatus: 1 } }));
+    assert.equal(renewed.json.result, 'processed');
+    assert.equal(user.plan, 'plus');
+    assert.equal(record?.expiresAt, new Date(at(30 * DAY)).toISOString());
+  });
+
+  it('a purchase without an account token belongs to the first account that claims it', async () => {
+    const owner = addUser(store);
+    const other = addUser(store);
+    const otid = `offer-${randomUUID()}`;
+    const tx = () => storeKitTx({ originalTransactionId: otid, expiresDate: at(30 * DAY) });
+    assert.equal((await verifyAs(owner, tx())).status, 200);
+
+    const stolen = await verifyAs(other, tx());
+    assert.equal(stolen.status, 403);
+    assert.equal(other.plan, 'free');
+    assert.equal(recordFor(otid)?.userId, owner.id);
+    assert.ok(!store.data.audit.some((a) => a.action === 'billing.subscription_claimed' && a.actor.id === other.id));
+    // The owner may send it again (the app re-verifies on launch).
+    assert.equal((await verifyAs(owner, tx())).status, 200);
+    assert.equal(owner.plan, 'plus');
+
+    // Nor can a token-less transaction take over a purchase already linked by its account token.
+    const subscribed = await subscribedUser();
+    const takeover = await verifyAs(other, storeKitTx({ originalTransactionId: subscribed.otid, expiresDate: at(60 * DAY) }));
+    assert.equal(takeover.status, 403);
+    assert.equal(recordFor(subscribed.otid)?.userId, subscribed.user.id);
+    assert.equal(other.plan, 'free');
+  });
+
+  it('a purchase carrying an account token can only be linked by that account, recorded yet or not', async () => {
+    const buyer = addUser(store);
+    const other = addUser(store);
+    const buyerToken = (await call(base, 'GET', '/api/billing/status', undefined, { Authorization: `Bearer ${buyer.token}` })).json.billingAccountToken as string;
+    const otid = `token-${randomUUID()}`;
+    const tx = () => storeKitTx({ originalTransactionId: otid, appAccountToken: buyerToken, expiresDate: at(30 * DAY) });
+
+    assert.equal((await verifyAs(other, tx())).status, 403);
+    assert.equal(recordFor(otid), undefined, 'refused before anything is recorded');
+    assert.equal((await verifyAs(buyer, tx())).status, 200);
+    assert.equal((await verifyAs(other, tx())).status, 403);
+    assert.equal(recordFor(otid)?.userId, buyer.id);
+    assert.equal(other.plan, 'free');
+    assert.equal(buyer.plan, 'plus');
+  });
+
+  it('a win-back offer (OFFER_REDEEMED / RESUBSCRIBE) brings an expired subscription back', async () => {
+    const { user, otid, token } = await subscribedUser();
+    now = new Date(at(31 * DAY));
+    await post(notify('EXPIRED', { originalTransactionId: otid, appAccountToken: token, expiresDate: at(-DAY) }, { subtype: 'VOLUNTARY' }));
+    assert.equal(user.plan, 'free');
+    assert.equal(recordFor(otid)?.status, 'expired');
+
+    // Redeemed from the App Store's win-back offer: same originalTransactionId, no account token.
+    const r = await post(notify('OFFER_REDEEMED', { originalTransactionId: otid, expiresDate: at(30 * DAY) }, { subtype: 'RESUBSCRIBE', renewal: { autoRenewStatus: 1 } }));
+    assert.equal(r.json.result, 'processed');
+    assert.equal(user.plan, 'plus');
+    const record = recordFor(otid);
+    assert.equal(record?.status, 'active');
+    assert.equal(record?.userId, user.id);
+    assert.equal(record?.expiresAt, new Date(at(30 * DAY)).toISOString());
+  });
+
+  it('an upgrade (DID_CHANGE_RENEWAL_PREF / UPGRADE) moves to the new product and expiry at once, and an older event cannot undo it', async () => {
+    const { user, otid, token } = await subscribedUser();
+    const older = notify('DID_CHANGE_RENEWAL_PREF', { originalTransactionId: otid, appAccountToken: token, productId: 'plus_monthly', expiresDate: at(30 * DAY) });
+    const r = await post(
+      notify('DID_CHANGE_RENEWAL_PREF', { originalTransactionId: otid, appAccountToken: token, productId: 'plus_annual', expiresDate: at(365 * DAY) }, { subtype: 'UPGRADE', renewal: { autoRenewStatus: 1 } }),
+    );
+    assert.equal(r.json.result, 'processed');
+    const record = recordFor(otid);
+    assert.equal(record?.productId, 'plus_annual');
+    assert.equal(record?.expiresAt, new Date(at(365 * DAY)).toISOString());
+    assert.equal(record?.status, 'active');
+    assert.equal(user.plan, 'plus');
+
+    assert.equal((await post(older)).json.result, 'stale');
+    assert.equal(record?.productId, 'plus_annual');
+    assert.equal(record?.expiresAt, new Date(at(365 * DAY)).toISOString());
+  });
+
   it('answers 503 while App Store billing is not configured', async () => {
     const { base: b, server: s } = await serve(new Store(), {});
     const r = await call(b, 'POST', '/api/billing/apple/notifications', { signedPayload: 'x.y.z' });
@@ -644,6 +768,121 @@ describe('Google Play real-time developer notifications', () => {
     assert.equal(store.data.billing.find((b) => b.externalId === purchaseToken)?.status, 'expired');
     assert.equal(store.data.billing.find((b) => b.externalId === newToken)?.userId, user.id);
     assert.ok(calls.ack.includes(newToken));
+  });
+
+  /** A paid subscription on record, plus an upgrade to it still awaiting payment. */
+  async function pendingUpgrade() {
+    const { user, purchaseToken } = await playUser();
+    await push(subscriptionEvent(purchaseToken, 4));
+    assert.equal(user.plan, 'plus');
+    const newToken = `pt-${randomUUID()}`;
+    const pending: FakeSub = {
+      subscriptionState: 'SUBSCRIPTION_STATE_PENDING',
+      acknowledgementState: 'ACKNOWLEDGEMENT_STATE_PENDING',
+      expiryTime: new Date(at(365 * DAY)).toISOString(),
+      linkedPurchaseToken: purchaseToken,
+    };
+    subs.set(newToken, pending);
+    const r = await push(subscriptionEvent(newToken, 4));
+    assert.equal(r.json.result, 'processed');
+    const record = (token: string) => store.data.billing.find((b) => b.externalId === token);
+    return { user, oldToken: purchaseToken, newToken, pending, record };
+  }
+
+  it('a pending upgrade keeps the old purchase, and Plus, until its payment clears', async () => {
+    const { user, oldToken, newToken, pending, record } = await pendingUpgrade();
+    assert.equal(record(newToken)?.status, 'pending');
+    assert.equal(record(oldToken)?.status, 'active');
+    assert.equal(user.plan, 'plus');
+    assert.ok(!calls.ack.includes(newToken), 'nothing granted yet, so nothing acknowledged');
+
+    pending.subscriptionState = 'SUBSCRIPTION_STATE_ACTIVE';
+    await push(subscriptionEvent(newToken, 4));
+    assert.equal(record(newToken)?.status, 'active');
+    assert.equal(record(oldToken)?.status, 'expired');
+    assert.equal(user.plan, 'plus');
+    assert.ok(calls.ack.includes(newToken));
+  });
+
+  it('an abandoned pending upgrade restores the old purchase from a fresh Play read', async () => {
+    const { user, oldToken, newToken, pending, record } = await pendingUpgrade();
+    // As an earlier build left it: the old purchase retired the moment the pending one arrived.
+    const old = record(oldToken);
+    assert.ok(old);
+    old.status = 'expired';
+    user.plan = 'free';
+    // Meanwhile the old purchase renewed; the restore must carry Play's current word, not the record's.
+    const oldSub = subs.get(oldToken);
+    assert.ok(oldSub);
+    oldSub.expiryTime = new Date(at(60 * DAY)).toISOString();
+
+    pending.subscriptionState = 'SUBSCRIPTION_STATE_PENDING_PURCHASE_CANCELED';
+    const gets = calls.get;
+    const r = await push(subscriptionEvent(newToken, 20));
+    assert.equal(r.status, 200);
+    assert.equal(r.json.result, 'processed');
+    assert.equal(calls.get - gets, 2, 'the cancelled purchase and the one it linked to');
+    assert.equal(old.status, 'active');
+    assert.equal(old.expiresAt, oldSub.expiryTime);
+    assert.equal(old.userId, user.id);
+    assert.equal(record(newToken)?.status, 'expired');
+    assert.equal(user.plan, 'plus');
+
+    // A linked purchase Play no longer knows (404 / 410) has nothing to restore; the message still completes.
+    const gone = await pendingUpgrade();
+    subs.delete(gone.oldToken);
+    gone.pending.subscriptionState = 'SUBSCRIPTION_STATE_PENDING_PURCHASE_CANCELED';
+    const done = await push(subscriptionEvent(gone.newToken, 20));
+    assert.equal(done.status, 200);
+    assert.equal(gone.record(gone.oldToken)?.status, 'active');
+    assert.equal(gone.record(gone.newToken)?.status, 'expired');
+  });
+
+  it('applies notifications for one purchase in arrival order, even when Play answers out of order', async () => {
+    const { user, purchaseToken } = await playUser();
+    const playSub = subs.get(purchaseToken);
+    assert.ok(playSub);
+    let release = () => {};
+    const held = new Promise<void>((resolve) => (release = resolve));
+    const reads: string[] = [];
+    const play: PlayApi = {
+      async getSubscription(_packageName, token) {
+        const s = subs.get(token);
+        assert.ok(s);
+        // The state as of the request, however late the answer arrives.
+        const snapshot = {
+          subscriptionState: s.subscriptionState,
+          acknowledgementState: 'ACKNOWLEDGEMENT_STATE_ACKNOWLEDGED',
+          externalAccountIdentifiers: { obfuscatedExternalAccountId: s.obfuscatedExternalAccountId },
+          lineItems: [{ productId: 'plus_monthly', expiryTime: s.expiryTime }],
+        };
+        reads.push(snapshot.subscriptionState);
+        if (reads.length === 1) await held;
+        return snapshot;
+      },
+      async acknowledge() {},
+    };
+    const handle = createRtdnHandler(
+      store,
+      { packageName: PACKAGE, push: { audience: AUDIENCE, serviceAccountEmail: PUSH_SA }, jwks: { key: async (kid) => (kid === KID ? googleKey.publicKey : undefined) }, play },
+      deps,
+    );
+    const message = (notificationType: number) => ({
+      message: { data: Buffer.from(JSON.stringify({ packageName: PACKAGE, ...subscriptionEvent(purchaseToken, notificationType) })).toString('base64'), messageId: `msg-${++messages}` },
+    });
+    // Lets every handler run as far as it can; nothing here waits on real I/O.
+    const settle = () => new Promise((resolve) => setImmediate(resolve));
+
+    const purchased = handle(oidcToken(), message(4), log);
+    await settle();
+    playSub.subscriptionState = 'SUBSCRIPTION_STATE_EXPIRED';
+    const expired = handle(oidcToken(), message(13), log);
+    await settle();
+    release();
+    await Promise.all([purchased, expired]);
+    assert.deepEqual(reads, ['SUBSCRIPTION_STATE_ACTIVE', 'SUBSCRIPTION_STATE_EXPIRED']);
+    assert.equal(store.data.billing.find((b) => b.externalId === purchaseToken)?.status, 'expired');
+    assert.equal(user.plan, 'free');
   });
 
   it('does not acknowledge a purchase it cannot link to an account', async () => {
