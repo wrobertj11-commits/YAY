@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { Nav } from '../App.tsx';
-import { api, type Cadence, type ItemDetail, type Me } from '../api.ts';
+import { api, type Cadence, type ConciergeRequest, type ItemDetail, type Me } from '../api.ts';
 import { CADENCE_LABEL, money, price, RAIL_LABEL, relativeDays, shortDate, SOURCE_LABEL } from '../format.ts';
 import { Avatar, Spinner, StatusBadge } from '../ui.tsx';
+import { ConciergeOffer, ConciergeStatusCard, useConciergeRequests, type ConciergeSignature } from './Concierge.tsx';
 
 interface Props {
   id: string;
@@ -23,6 +24,7 @@ export function ItemScreen({ id, startInCancel, me, nav, onChanged, toast }: Pro
   useEffect(() => {
     load().catch((e) => setError(e.message));
   }, [load]);
+  const concierge = useConciergeRequests(id);
 
   async function act(fn: () => Promise<unknown>, message?: string) {
     setError(null);
@@ -53,12 +55,14 @@ export function ItemScreen({ id, startInCancel, me, nav, onChanged, toast }: Pro
           await act(() => api('POST', `/items/${id}/cancel`, { action: 'completed', proof }), `Nice. We'll watch your next statement for ${item.name}.`);
           setCancelMode(false);
         }}
-        onConcierge={() =>
-          act(async () => {
-            const r = await api<{ concierge: { feeCents: number } }>('POST', `/items/${id}/concierge`, {});
-            toast(`Concierge requested. Fee: ${money(r.concierge.feeCents)}.`);
-          })
-        }
+        concierge={concierge.latest}
+        onConcierge={async (signature) => {
+          // Errors propagate so the authorization sheet stays open and shows them.
+          const r = await api<{ concierge: ConciergeRequest }>('POST', `/items/${id}/concierge`, { ...signature, agree: true });
+          await Promise.all([load(), concierge.reload(), onChanged()]).catch(() => {});
+          setCancelMode(false);
+          toast(`Request sent. We'll cancel ${item.name} for you. Fee: ${money(r.concierge.feeCents)}.`);
+        }}
         onStarted={() => api('POST', `/items/${id}/cancel`, { action: 'started' }).catch(() => {})}
         onReportBroken={() => item.merchantId && act(() => api('POST', `/merchants/${item.merchantId}/report-broken`, {}), 'Thanks, we will fix that guide.')}
         error={error}
@@ -104,6 +108,17 @@ export function ItemScreen({ id, startInCancel, me, nav, onChanged, toast }: Pro
           <strong>Cancellation verified {shortDate(item.cancelVerifiedAt)}.</strong>
           <span>No charge appeared when it would have renewed. You're saving {money(item.yearlyCents, { whole: true })} a year.</span>
         </div>
+      )}
+      {concierge.latest && concierge.latest.status !== 'cancelled' && (
+        <ConciergeStatusCard
+          request={concierge.latest}
+          onWithdraw={(requestId) =>
+            act(async () => {
+              await api('POST', `/concierge/${requestId}/withdraw`, {});
+              await concierge.reload();
+            }, 'Request withdrawn. Your authorization is revoked.')
+          }
+        />
       )}
       {item.needsReview && live && (
         <div className="alert-banner warn">
@@ -266,13 +281,15 @@ interface CancelFlowProps {
   me: Me;
   onBack: () => void;
   onDone: (proof?: string) => void;
-  onConcierge: () => void;
+  /** The item's newest done-for-you request, if any. */
+  concierge?: ConciergeRequest;
+  onConcierge: (signature: ConciergeSignature) => Promise<void>;
   onStarted: () => void;
   onReportBroken: () => void;
   error: string | null;
 }
 
-function CancelFlow({ item, me, onBack, onDone, onConcierge, onStarted, onReportBroken, error }: CancelFlowProps) {
+function CancelFlow({ item, me, onBack, onDone, concierge, onConcierge, onStarted, onReportBroken, error }: CancelFlowProps) {
   const plan = item.cancelPlan;
   const [checked, setChecked] = useState<boolean[]>(() => plan.steps.map(() => false));
   const [proof, setProof] = useState('');
@@ -344,15 +361,7 @@ function CancelFlow({ item, me, onBack, onDone, onConcierge, onStarted, onReport
         <p className="fine">We'll mark it verified once your next statement shows no charge.</p>
       </div>
 
-      {plan.conciergeAvailable && (
-        <div className="card concierge">
-          <strong>Rather we do it?</strong>
-          <p className="muted">Our team cancels for you and requests any refund. Fee: 30% of your first-year savings, capped at $20.</p>
-          <button className="btn btn-secondary btn-block" onClick={onConcierge}>
-            Cancel it for me
-          </button>
-        </div>
-      )}
+      {plan.conciergeAvailable && <ConciergeOffer item={item} request={concierge} onRequest={onConcierge} />}
 
       {item.merchantId && (
         <button className="btn btn-link btn-block" onClick={onReportBroken}>
