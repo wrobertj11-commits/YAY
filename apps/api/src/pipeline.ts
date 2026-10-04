@@ -82,8 +82,11 @@ export async function pullConnection(store: Store, user: User, c: Connection, de
     }
   }
   c.lastSyncedAt = deps.clock().toISOString();
-  c.status = 'active';
-  c.error = undefined;
+  // Expiring consent still syncs; only re-linking (Plaid update mode) renews it, so a good pull keeps the warning.
+  if (c.status !== 'pending_expiration') {
+    c.status = 'active';
+    c.error = undefined;
+  }
 }
 
 /** Re-runs detection and reconciliation from stored data, then (re)schedules alerts. */
