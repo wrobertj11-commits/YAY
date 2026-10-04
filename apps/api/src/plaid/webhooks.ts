@@ -36,7 +36,7 @@ import type { Logger } from '../log.ts';
 import { reportError } from '../log.ts';
 import { describe, inc } from '../metrics.ts';
 import { pullConnection, recompute, type PipelineDeps } from '../pipeline.ts';
-import { LOGIN_REQUIRED_MESSAGE, PLAID_DISCONNECTED_MESSAGE, PlaidApiError } from '../providers/bank.ts';
+import { LOGIN_REQUIRED_MESSAGE, PLAID_DISCONNECTED_MESSAGE, recordPullFailure } from '../providers/bank.ts';
 import type { Connection, Store, User } from '../store.ts';
 
 describe('plaid_webhooks_total', 'Plaid webhooks by type, code and result');
@@ -168,7 +168,7 @@ async function pullWithin(store: Store, user: User, conn: Connection, deps: Pipe
     try {
       await pullConnection(store, user, conn, deps);
     } catch (err) {
-      recordPullFailure(store, conn, err, opts.log);
+      recordWebhookPullFailure(store, conn, err, opts.log);
       return 'failed';
     }
     try {
@@ -193,14 +193,9 @@ async function pullWithin(store: Store, user: User, conn: Connection, deps: Pipe
   }
 }
 
-function recordPullFailure(store: Store, conn: Connection, err: unknown, log: Logger): void {
-  if (err instanceof PlaidApiError && err.errorCode === 'ITEM_LOGIN_REQUIRED') {
-    // The ITEM / ERROR webhook may arrive later (or not at all); the pull already told us.
-    conn.status = 'reauth_required';
-    conn.error = LOGIN_REQUIRED_MESSAGE;
-  } else {
-    conn.status = 'error';
-    conn.error = (err as Error).message;
+function recordWebhookPullFailure(store: Store, conn: Connection, err: unknown, log: Logger): void {
+  // The ITEM / ERROR webhook may arrive later (or not at all); a login-required pull already told us.
+  if (!recordPullFailure(conn, err).loginRequired) {
     inc('sync_connection_errors_total', { provider: conn.provider });
     reportError(err, { source: 'plaid-webhook', connectionId: conn.id });
   }

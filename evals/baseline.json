@@ -24,7 +24,7 @@
     "emails.detect.precision": 0.873,
     "emails.detect.recall": 0.9821,
     "emails.detect.f1": 0.9244,
-    "emails.field.merchant": 0.9107,
+    "emails.field.merchant": 0.9464,
     "emails.field.priceCents": 0.88,
     "emails.field.oldPriceCents": 0.6667,
     "emails.field.cadence": 0.7872,
@@ -32,8 +32,8 @@
     "emails.field.chargeDate": 0.8049,
     "emails.field.effectiveDate": 0.8333,
     "emails.gate.recall": 1,
-    "emails.casePass": 0.5342,
-    "e2e.scenarioPass": 0.75,
-    "e2e.checkPass": 0.9
+    "emails.casePass": 0.5479,
+    "e2e.scenarioPass": 0.875,
+    "e2e.checkPass": 0.9556
   }
 }

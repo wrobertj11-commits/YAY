@@ -22,7 +22,7 @@ import { decrypt, newId } from './crypto.ts';
 import { llmExtract, mergeSignals } from './llm.ts';
 import { dispatchOutbox } from './delivery/index.ts';
 import { consoleNotifier, type Notifier } from './notify.ts';
-import { LOGIN_REQUIRED_MESSAGE, PlaidApiError, PlaidBank, sandboxBank, type BankProvider } from './providers/bank.ts';
+import { PlaidBank, recordPullFailure, sandboxBank, type BankProvider } from './providers/bank.ts';
 import { gmailInbox, outlookInbox, sandboxInbox, type EmailProvider } from './providers/email.ts';
 import type { Connection, Store, StoredSignal, User } from './store.ts';
 
@@ -79,10 +79,14 @@ export async function pullConnection(store: Store, user: User, c: Connection, de
     const r = await deps.bank(c).sync({ connectionId: c.id, accessToken, cursor: c.cursor, today });
     if (!stillThere(store, user, c)) return;
     const removed = new Set(r.removedIds);
-    const existing = new Set(store.data.transactions.filter((t) => t.userId === user.id).map((t) => t.id));
     store.data.transactions = store.data.transactions.filter((t) => !removed.has(t.id));
+    // Upsert: Plaid sends corrections (amount, date, name) as `modified` with the same id, once. Skipping known
+    // ids would keep the stale row forever, since the cursor has moved past it.
+    const existing = new Map(store.data.transactions.filter((t) => t.userId === user.id).map((t) => [t.id, t]));
     for (const t of r.transactions) {
-      if (!existing.has(t.id)) store.data.transactions.push({ ...t, userId: user.id, connectionId: c.id });
+      const row = existing.get(t.id);
+      if (row) Object.assign(row, { date: t.date, amountCents: t.amountCents, description: t.description, paymentMethod: t.paymentMethod });
+      else store.data.transactions.push({ ...t, userId: user.id, connectionId: c.id });
     }
     c.cursor = r.cursor;
   } else {
@@ -177,9 +181,7 @@ async function runSync(store: Store, user: User, deps: PipelineDeps): Promise<Sy
       await pullConnection(store, user, c, deps);
     } catch (err) {
       // A missed ITEM_LOGIN_REQUIRED webhook still surfaces here; send the user to update mode, not a dead end.
-      const loginRequired = err instanceof PlaidApiError && err.errorCode === 'ITEM_LOGIN_REQUIRED';
-      c.status = loginRequired ? 'reauth_required' : 'error';
-      c.error = loginRequired ? LOGIN_REQUIRED_MESSAGE : (err as Error).message;
+      recordPullFailure(c, err);
       errors.push(`${c.label}: ${c.error}`);
       inc('sync_connection_errors_total', { provider: c.provider });
       log.warn('connection sync failed', { connectionId: c.id, provider: c.provider, err });

@@ -177,6 +177,21 @@ export function claimRequest(store: Store, staffId: string, id: string, deps: Cl
   assert(request.authorization && !request.authorization.revokedAt, 'No written authorization on file. The user must request again.', 409);
 
   const at = deps.clock().toISOString();
+  // The user may have cancelled it themselves meanwhile (in the app or by the merchant's own email). Close the
+  // request rather than send staff to contact the merchant about a finished job.
+  const item = store.data.items.find((i) => i.id === request.itemId && i.userId === request.userId);
+  if (!item || !CANCELLABLE.includes(item.status)) {
+    const from = request.status;
+    request.status = 'cancelled';
+    request.closedAt = at;
+    request.updatedAt = at;
+    request.note = 'This subscription was already cancelled, so we closed the request.';
+    request.authorization.revokedAt = at;
+    record(store, request, { type: 'system', id: 'concierge' }, 'concierge.closed_already_cancelled', at, { from, to: 'cancelled', itemStatus: item?.status ?? 'missing' });
+    inc('concierge_events_total', { event: 'closed_already_cancelled' });
+    store.flush();
+    throw new HttpError(409, 'This subscription is already cancelled; the request has been closed');
+  }
   request.status = 'in_progress';
   request.assignedTo = staffId;
   request.claimedAt = at;

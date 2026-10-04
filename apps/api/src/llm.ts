@@ -1,11 +1,9 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { zodOutputFormat } from '@anthropic-ai/sdk/helpers/zod';
 import { z } from 'zod';
-import { safeServiceName, receivedDate,
+import { resolveMerchant, safeServiceName, receivedDate,
   addDays,
   extractEmailSignal,
-  merchantByEmailDomain,
-  merchantByName,
   senderAddressOf,
   senderDomainOf,
   type Cadence,
@@ -281,7 +279,7 @@ export async function llmExtract(email: EmailMessage, opts: LlmExtractOptions = 
 
   // Attribute by the real sender address (never the display name), then by the extracted name.
   const sender = senderAddressOf(email.from);
-  const merchant = (sender ? merchantByEmailDomain(sender) : undefined) ?? (r.serviceName ? merchantByName(r.serviceName) : undefined);
+  const merchant = resolveMerchant(sender, r.serviceName ?? '');
   const filled = [r.serviceName, r.priceCents, r.chargeDate].filter((v) => v !== undefined).length;
   const signal: EmailSignal = {
     kind: r.kind,

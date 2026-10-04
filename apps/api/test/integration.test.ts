@@ -166,3 +166,48 @@ describe('account deletion during a sync', () => {
     assert.equal(store.data.alerts.filter((a) => a.userId === 'gone').length, 0);
   });
 });
+
+describe('bank corrections and consent warnings', () => {
+  function bankUser(id: string) {
+    const store = new Store();
+    const user = { id, email: `${id}@example.com`, token: `t-${id}`, plan: 'plus' as const, forwardToken: `f-${id}`, createdAt: '2026-10-01T00:00:00Z', alertPrefs: normalizeAlertPrefs({}) };
+    store.data.users.push(user);
+    store.data.connections.push({ id: `c-${id}`, userId: id, type: 'bank', provider: 'plaid', label: 'Bank', status: 'active', createdAt: '2026-10-01T00:00:00Z' });
+    return { store, user };
+  }
+  const clock = () => new Date('2026-10-04T15:00:00Z');
+  const tx = (id: string, amountCents: number) => ({ id, accountId: 'a', date: '2026-09-15', description: 'NETFLIX.COM', amountCents, paymentMethod: 'Visa' });
+
+  it('applies a modified transaction instead of keeping the stale row', async () => {
+    const { store, user } = bankUser('mod');
+    let amount = 1799;
+    const bank = { async sync() { return { transactions: [tx('p5', amount)], removedIds: [] }; } };
+    const deps = { ...defaultDeps, llm: undefined, notifier: undefined, bank: () => bank, clock };
+    await syncUser(store, user, deps);
+    amount = 1549; // Plaid resends the corrected charge under the same id, in `modified`
+    await syncUser(store, user, deps);
+    const rows = store.data.transactions.filter((t) => t.id === 'p5');
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0]?.amountCents, 1549);
+  });
+
+  it('a transient failure keeps the "consent expiring" warning', async () => {
+    const { store, user } = bankUser('exp');
+    const conn = store.data.connections[0];
+    assert.ok(conn);
+    Object.assign(conn, { status: 'pending_expiration', error: 'Access to this bank expires soon. Reconnect to keep tracking charges.' });
+    let fail = true;
+    const bank = {
+      async sync() {
+        if (fail) throw new PlaidApiError('/transactions/sync', 500, { error_type: 'INSTITUTION_ERROR', error_code: 'INSTITUTION_DOWN', error_message: 'down' });
+        return { transactions: [], removedIds: [] };
+      },
+    };
+    const deps = { ...defaultDeps, llm: undefined, notifier: undefined, bank: () => bank, clock };
+    await syncUser(store, user, deps);
+    assert.equal(conn.status, 'pending_expiration');
+    fail = false;
+    await syncUser(store, user, deps);
+    assert.equal(conn.status, 'pending_expiration', 'only re-linking clears it');
+  });
+});

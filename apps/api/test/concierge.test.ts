@@ -490,3 +490,23 @@ describe('self-cancel while a request is open', () => {
     assert.equal((await admin('POST', `/api/admin/concierge/${id}/claim`, 'sam', {})).status, 409);
   });
 });
+
+describe('claiming a request whose item is already cancelled', () => {
+  it('closes the request instead of sending staff to a finished job', async () => {
+    const itemId = await addItem(bob.token, 'hulu', 'Hulu', 1799);
+    const req = await call('POST', `/api/items/${itemId}/concierge`, { token: bob.token, body: sign({ signedName: 'Bob Example' }) });
+    assert.equal(req.status, 200, req.text);
+    const id = req.json.concierge.id as string;
+    // Cancelled outside the in-app flow (e.g. the merchant's own confirmation email moved it).
+    const item = store.data.items.find((i) => i.id === itemId);
+    assert.ok(item);
+    item.status = 'cancel_pending';
+    tick();
+    const claim = await admin('POST', `/api/admin/concierge/${id}/claim`, 'sam', {});
+    assert.equal(claim.status, 409);
+    const request = store.data.concierge.find((r) => r.id === id);
+    assert.equal(request?.status, 'cancelled');
+    assert.ok(request?.authorization?.revokedAt);
+    assert.ok(auditFor(id).some((e) => e.action === 'concierge.closed_already_cancelled'));
+  });
+});

@@ -1,6 +1,6 @@
 import { addDays, addMonths, toISODate } from './dates.ts';
 import { localDate } from './tz.ts';
-import { merchantByEmailDomain, merchantByName } from './merchants.ts';
+import { merchantsByEmailDomain, resolveMerchant } from './merchants.ts';
 import { parseMoney } from './money.ts';
 import type { Cadence, EmailMessage, EmailSignal, EmailSignalKind, ISODate } from './types.ts';
 
@@ -59,7 +59,7 @@ export function senderDomainOf(from: string): string | undefined {
 
 export function isRelevantEmail(from: string, subject: string): boolean {
   if (SUBJECT_PATTERNS.some((p) => p.test(subject))) return true;
-  return RECEIPT_SENDER_PATTERN.test(from) || Boolean(merchantByEmailDomain(from));
+  return RECEIPT_SENDER_PATTERN.test(from) || merchantsByEmailDomain(from).length > 0;
 }
 
 // ---------- field parsers ----------
@@ -228,7 +228,7 @@ export function extractEmailSignal(email: EmailMessage, opts: { timeZone?: strin
   // Attribute by the real address, not the display name (which the sender chooses freely).
   const sender = senderAddressOf(email.from);
   const merchant =
-    (sender ? merchantByEmailDomain(sender) : undefined) ?? merchantByName(email.subject) ?? merchantByName(email.body.slice(0, 400));
+    resolveMerchant(sender, email.subject, email.body.slice(0, 400));
   const subjectName = email.subject.match(/welcome to ([A-Z][\w+&' ]{1,30}?)(?:[!.,:]|$| -)/i)?.[1]?.trim();
   // Without a catalog match the name comes from text the sender controls: keep it only if it is plainly a name.
   const serviceName = merchant?.name ?? safeServiceName(subjectName) ?? safeServiceName(displayName(email.from)) ?? 'Unknown service';

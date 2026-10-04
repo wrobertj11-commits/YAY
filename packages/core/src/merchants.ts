@@ -144,10 +144,33 @@ export function searchMerchants(query: string, limit = 10): Merchant[] {
   return MERCHANTS.filter((m) => m.name.toLowerCase().includes(q) || m.id.includes(q)).slice(0, limit);
 }
 
-export function merchantByEmailDomain(fromAddress: string): Merchant | undefined {
+/** Every catalog merchant that sends from this address's domain (several share amazon.com, apple.com, microsoft.com). */
+export function merchantsByEmailDomain(fromAddress: string): Merchant[] {
   const domain = fromAddress.toLowerCase().match(/@([a-z0-9.-]+)/)?.[1];
-  if (!domain) return undefined;
-  return MERCHANTS.find((m) => m.emailDomains.some((d) => domain === d || domain.endsWith(`.${d}`)));
+  if (!domain) return [];
+  return MERCHANTS.filter((m) => m.emailDomains.some((d) => domain === d || domain.endsWith(`.${d}`)));
+}
+
+/** The sender's merchant when its domain belongs to exactly one; undefined for unknown or shared domains. */
+export function merchantByEmailDomain(fromAddress: string): Merchant | undefined {
+  const matches = merchantsByEmailDomain(fromAddress);
+  return matches.length === 1 ? matches[0] : undefined;
+}
+
+/**
+ * Which catalog merchant an email is about. A domain owned by one merchant settles it. On a shared domain the
+ * email has to name the service ("Kindle Unlimited" from amazon.com is not Amazon Prime); if it names one sold
+ * through that platform instead (an App Store receipt for Calm), that is the merchant. Otherwise it stays
+ * unknown rather than guessing, so a cancellation can't land on the wrong item.
+ */
+export function resolveMerchant(sender: string | undefined, ...texts: string[]): Merchant | undefined {
+  const byDomain = sender ? merchantsByEmailDomain(sender) : [];
+  if (byDomain.length === 1) return byDomain[0];
+  for (const text of texts) {
+    const named = merchantByName(text);
+    if (named) return named;
+  }
+  return undefined;
 }
 
 /** Finds a catalog merchant whose name appears in free text (e.g. an email subject). */

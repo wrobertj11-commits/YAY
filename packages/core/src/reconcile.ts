@@ -157,6 +157,9 @@ export function reconcile(input: ReconcileInput): ReconcileResult {
   const events: ItemEvent[] = [];
   const touch = (item: TrackedItem) => (item.updatedAt = now);
 
+  const txDate = new Map(input.transactions.map((t) => [t.id, t.date]));
+  const chargesAfter = (item: TrackedItem, date: ISODate) => item.transactionIds.filter((id) => (txDate.get(id) ?? '') > date).length;
+
   const findByKey = (key: string, name?: string) =>
     items.find((i) => i.matchKey === key || (i.merchantId && i.merchantId === key)) ??
     (name ? items.find((i) => i.name.toLowerCase() === name.toLowerCase()) : undefined);
@@ -241,6 +244,9 @@ export function reconcile(input: ReconcileInput): ReconcileResult {
       case 'cancellation_confirmation': {
         if (!item) continue; // nothing we track; ignore
         if (!isTrustedCancellation(s, item)) continue; // not from the merchant: leave the item (and its alerts) alone
+        // An old cancellation from a stint that's over: the subscription has charged at least twice since, so
+        // the user came back. (One later charge is exactly what the post-cancel check exists to catch.)
+        if (chargesAfter(item, s.receivedAt) >= 2) break;
         if (isLive(item) || item.status === 'cancel_pending') {
           item.status = 'cancel_pending';
           item.cancelledAt ??= s.receivedAt;
@@ -302,6 +308,10 @@ export function reconcile(input: ReconcileInput): ReconcileResult {
         if (isNew) events.push({ type: 'price_increase', itemId: item.id });
       }
     }
+    // The charges no longer show an increase (e.g. the bank corrected the amount): drop the warning they raised.
+    if (item.priceChange?.detectedFrom === 'charges' && !(before && after && after.amountCents > before.amountCents)) {
+      item.priceChange = undefined;
+    }
     touch(item);
   }
 
@@ -314,7 +324,8 @@ export function reconcile(input: ReconcileInput): ReconcileResult {
   for (const item of items) {
     if (item.status === 'trial' && item.trialEndsAt) {
       const from = addDays(item.trialEndsAt, -CONVERSION_WINDOW_DAYS);
-      const hit = debits.find(({ t, n }) => t.date >= from && txnMatchesItem(n, t.amountCents, { ...item, amountCents: t.amountCents }));
+      // App-store items are matched by price; a trial with no known price yet takes the first store charge.
+      const hit = debits.find(({ t, n }) => t.date >= from && txnMatchesItem(n, t.amountCents, item.amountCents ? item : { ...item, amountCents: t.amountCents }));
       if (hit) {
         item.kind = 'subscription';
         item.status = 'active';
@@ -331,7 +342,9 @@ export function reconcile(input: ReconcileInput): ReconcileResult {
 
     if ((item.status === 'cancel_pending' || item.status === 'cancel_verified') && item.cancelledAt) {
       const after = debits.filter(
-        ({ t, n }) => t.date > item.cancelledAt! && !item.transactionIds.includes(t.id) && txnMatchesItem(n, t.amountCents, { ...item, amountCents: t.amountCents }),
+        // The item as-is: an App Store item is one price, so a different subscription's charge on the same
+        // Apple descriptor isn't "charged after you cancelled".
+        ({ t, n }) => t.date > item.cancelledAt! && !item.transactionIds.includes(t.id) && txnMatchesItem(n, t.amountCents, item),
       );
       if (after.length) {
         item.status = 'charged_after_cancel';
@@ -375,13 +388,15 @@ export function reconcile(input: ReconcileInput): ReconcileResult {
 
 /** User tapped "I cancelled it" (or the concierge finished). Verification happens on later statements. */
 export function markCancelled(item: TrackedItem, today: ISODate, now: ISODateTime, proof?: string): TrackedItem {
+  // A trial cancelled before conversion is expected never to charge. A date already in the past (e.g. re-cancelling
+  // after a charge-after-cancel) rolls forward: verification needs a future charge date that then passes quietly.
+  const expected = item.trialEndsAt ?? item.nextChargeDate;
   return {
     ...item,
     status: 'cancel_pending',
     cancelledAt: today,
     cancelProof: proof ?? item.cancelProof,
-    // A trial cancelled before conversion is expected never to charge.
-    nextChargeDate: item.trialEndsAt ?? item.nextChargeDate,
+    nextChargeDate: expected && expected < today ? nextOnOrAfter(expected, item.cadence, today) : expected,
     updatedAt: now,
   };
 }

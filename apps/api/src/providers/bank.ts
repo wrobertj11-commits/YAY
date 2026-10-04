@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import type { ISODate, Transaction } from '@trialguard/core';
 import { config } from '../config.ts';
+import type { Connection } from '../store.ts';
 import { sandboxTransactions } from '../sandbox.ts';
 
 export interface BankSyncResult {
@@ -51,6 +52,23 @@ export interface PlaidBankOptions {
 /** A failed Plaid call. Keeps Plaid's documented error fields so callers can branch on `errorCode`. */
 /** Shown on a connection whose bank login expired (Plaid ITEM_LOGIN_REQUIRED), from the webhook or a failed sync. */
 export const LOGIN_REQUIRED_MESSAGE = 'Your bank needs you to sign in again. Reconnect to keep tracking charges.';
+
+/**
+ * Records a failed pull on the connection. Login-required sends the user to update mode. Any other failure is
+ * transient, so a connection already flagged "consent expiring" keeps that flag (and its message): otherwise one
+ * bank outage would silently erase the warning and the next good pull would mark the link healthy.
+ */
+export function recordPullFailure(conn: Pick<Connection, 'status' | 'error'>, err: unknown): { loginRequired: boolean } {
+  const loginRequired = err instanceof PlaidApiError && err.errorCode === 'ITEM_LOGIN_REQUIRED';
+  if (loginRequired) {
+    conn.status = 'reauth_required';
+    conn.error = LOGIN_REQUIRED_MESSAGE;
+  } else if (conn.status !== 'pending_expiration') {
+    conn.status = 'error';
+    conn.error = err instanceof Error ? err.message : String(err);
+  }
+  return { loginRequired };
+}
 
 export class PlaidApiError extends Error {
   endpoint: string;
