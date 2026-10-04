@@ -57,6 +57,21 @@ function signalKey(s: EmailSignal): string {
   return s.merchantId ?? `name:${s.serviceName.toLowerCase()}`;
 }
 
+/**
+ * A cancellation email silences renewal alerts and starts the post-cancel check, so for a catalog
+ * merchant it only counts when it was sent from one of that merchant's domains: anyone can email
+ * "Your Netflix membership has been cancelled". An email the user forwarded or pasted is their own
+ * statement that they cancelled, the same as tapping "I cancelled", so it is trusted. Merchants
+ * outside the catalog have no known domains to check against.
+ */
+export function isTrustedCancellation(s: EmailSignal & { source?: Source }, item: TrackedItem): boolean {
+  if ((s.source ?? 'email') === 'forwarded') return true;
+  const merchant = getMerchant(item.merchantId ?? s.merchantId);
+  if (!merchant) return true;
+  const domain = s.senderDomain;
+  return Boolean(domain && merchant.emailDomains.some((d) => domain === d || domain.endsWith(`.${d}`)));
+}
+
 function addUnique<T>(list: T[], ...values: T[]): T[] {
   for (const v of values) if (!list.includes(v)) list.push(v);
   return list;
@@ -212,6 +227,7 @@ export function reconcile(input: ReconcileInput): ReconcileResult {
       }
       case 'cancellation_confirmation': {
         if (!item) continue; // nothing we track; ignore
+        if (!isTrustedCancellation(s, item)) continue; // not from the merchant: leave the item (and its alerts) alone
         if (isLive(item) || item.status === 'cancel_pending') {
           item.status = 'cancel_pending';
           item.cancelledAt ??= s.receivedAt;

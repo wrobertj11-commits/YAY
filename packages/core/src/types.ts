@@ -105,6 +105,12 @@ export interface EmailSignal {
   effectiveDate?: ISODate;
   confidence: number;
   extractedBy: 'rules' | 'llm';
+  /**
+   * Lower-case domain of the sender's actual address (inside the angle brackets, never the display
+   * name). A cancellation email for a catalog merchant only counts when this is one of the merchant's
+   * email domains, because anyone can write "Your Netflix membership is cancelled" in a subject.
+   */
+  senderDomain?: string;
 }
 
 export interface PriceChange {

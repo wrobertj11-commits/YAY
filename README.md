@@ -64,7 +64,7 @@ apps/web        Mobile-first React PWA: onboarding, home, list, item detail, can
 ## Privacy principles, as implemented
 
 - **Read-only everywhere.** No code path moves money.
-- **Email:** only subjects/senders matching receipt/signup patterns are fetched (`GMAIL_QUERY`, `SUBJECT_PATTERNS`). Bodies are extracted in memory and dropped. Only the extracted fields (`EmailSignal`) are stored. The exact filter is shown to users before they connect.
+- **Email:** only subjects/senders matching receipt/signup patterns are fetched (`GMAIL_QUERY`, `SUBJECT_PATTERNS`). Bodies are never stored. When the LLM step is enabled, the text of emails the rules can't fully parse is sent to Anthropic for extraction (see `docs/privacy/data-processing.md`). Only the extracted fields (`EmailSignal`) are stored. The exact filter is shown to users before they connect.
 - **Tokens** are encrypted at rest with AES-256-GCM (`TOKEN_ENCRYPTION_KEY`).
 - **One-tap deletion:** `DELETE /api/me` removes the user and all of their data. Disconnecting a bank deletes its transactions.
 

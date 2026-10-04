@@ -2,8 +2,11 @@ import { useEffect, useState } from 'react';
 import { api, type Me, type SyncSummary } from '../api.ts';
 import { Spinner } from '../ui.tsx';
 
+/** GET /connections/email-filter. The description is generated for this server, AI step included. */
 interface Filter {
   description: string;
+  /** Whether emails the rules can't parse are sent to the AI provider on this server. */
+  llmExtraction?: boolean;
   subjectTerms: string[];
   senders: string;
 }
@@ -13,10 +16,13 @@ export function ConnectScreen({ me, onChanged, onDone }: { me: Me; onChanged: ()
   const [error, setError] = useState<string | null>(null);
   const [found, setFound] = useState<SyncSummary | null>(null);
   const [filter, setFilter] = useState<Filter | null>(null);
+  const [filterFailed, setFilterFailed] = useState(false);
   const [showFilter, setShowFilter] = useState(false);
 
   useEffect(() => {
-    api<Filter>('GET', '/connections/email-filter').then(setFilter).catch(() => {});
+    api<Filter>('GET', '/connections/email-filter')
+      .then(setFilter)
+      .catch(() => setFilterFailed(true));
   }, []);
 
   const has = (t: string) => me.connections.some((c) => (t === 'inbox' ? c.type !== 'bank' : c.type === t));
@@ -78,7 +84,11 @@ export function ConnectScreen({ me, onChanged, onDone }: { me: Me; onChanged: ()
         </div>
         <div className="connect-body">
           <h3>Email inbox</h3>
-          <p className="muted">Catches free trials before the first charge, from signup emails. Read-only, receipts and signups only.</p>
+          <p className="muted">
+            Catches free trials before the first charge, from signup emails. Read-only, receipts and signups only.
+            {/* Said up front, before anyone connects, not only inside the details panel. */}
+            {filter?.llmExtraction && " Emails our rules can't fully read are sent to Anthropic, an AI provider, to pull out the details."}
+          </p>
           <button className="btn btn-link btn-small" onClick={() => setShowFilter(!showFilter)}>
             {showFilter ? 'Hide' : 'See exactly which emails we read'}
           </button>
@@ -89,6 +99,7 @@ export function ConnectScreen({ me, onChanged, onDone }: { me: Me; onChanged: ()
               <p className="muted">{filter.senders}</p>
             </div>
           )}
+          {showFilter && filterFailed && <p className="fine">Couldn't load the filter details. Check your connection and try again.</p>}
         </div>
         {has('inbox') ? (
           <span className="badge badge-ok">Connected</span>

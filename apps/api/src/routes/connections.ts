@@ -5,6 +5,7 @@ import { assert } from '../http.ts';
 import { PlaidBank } from '../providers/bank.ts';
 import { syncUser } from '../pipeline.ts';
 import type { Connection } from '../store.ts';
+import { emailFilterDescription } from './privacy.ts';
 import { publicConnection, zText, type RouteDeps } from './shared.ts';
 
 const zLabel = zText(60).optional();
@@ -16,9 +17,9 @@ const zConnect = z.union([
 
 export function register({ router, store, deps }: RouteDeps) {
   router.on('GET', '/api/connections/email-filter', { auth: 'none' }, () => ({
-    description:
-      'We only read emails whose subject looks like a receipt, signup, renewal, price change or cancellation. ' +
-      'Only the extracted fields (service, price, dates) are kept; the email itself is not stored.',
+    // Says whether email text goes to the AI provider, based on whether this server runs that step.
+    description: emailFilterDescription(Boolean(deps.llm)),
+    llmExtraction: Boolean(deps.llm),
     subjectTerms: READABLE_SUBJECT_TERMS,
     senders: 'Plus receipts from billing / no-reply addresses of known subscription services.',
   }));
