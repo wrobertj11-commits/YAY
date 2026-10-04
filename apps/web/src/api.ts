@@ -26,6 +26,8 @@ export interface AlertPrefs {
 export interface Me {
   id: string;
   email: string;
+  /** False until the code sent to `email` is entered; alert emails wait for it. */
+  emailVerified: boolean;
   plan: 'free' | 'plus';
   state?: string;
   alertPrefs: AlertPrefs;
@@ -35,6 +37,13 @@ export interface Me {
   entitlements: { maxTrialAlerts: number | null; priceHikeAlerts: boolean; postCancelCheck: boolean; savingsTracker: boolean };
   connections: Connection[];
   lastSyncAt?: string;
+}
+
+/** POST /api/auth/email/send-code. `devCode` comes back only from a dev server with no email sender. */
+export interface EmailCodeSent {
+  sent: boolean;
+  expiresAt: string;
+  devCode?: string;
 }
 
 export interface Item {

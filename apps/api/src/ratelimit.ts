@@ -24,6 +24,11 @@ export const LIMITS = {
   sync: { capacity: 10, per: 3600 },
   /** Data export is heavy. */
   export: { capacity: 5, per: 3600 },
+  /**
+   * Email verification codes, keyed by the address they go to: each one mails an address nobody has
+   * proved they own, and every code adds 5 guesses at a 6-digit number.
+   */
+  emailCode: { capacity: 5, per: 3600 },
   /** Everything else. */
   default: { capacity: 300, per: 60 },
 } satisfies Record<string, LimitSpec>;

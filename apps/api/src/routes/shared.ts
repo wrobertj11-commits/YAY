@@ -37,6 +37,8 @@ export function publicUser(store: Store, u: User) {
   return {
     id: u.id,
     email: u.email,
+    /** False until the user enters the code sent to `email`; alert emails wait for it. */
+    emailVerified: Boolean(u.emailVerifiedAt),
     plan: u.plan,
     state: u.state,
     alertPrefs: u.alertPrefs,
