@@ -21,7 +21,7 @@ import { inc, timed } from './metrics.ts';
 import { decrypt, newId } from './crypto.ts';
 import { llmExtract, mergeSignals } from './llm.ts';
 import { consoleNotifier, dispatchDueAlerts, type Notifier } from './notify.ts';
-import { PlaidBank, sandboxBank, type BankProvider } from './providers/bank.ts';
+import { LOGIN_REQUIRED_MESSAGE, PlaidApiError, PlaidBank, sandboxBank, type BankProvider } from './providers/bank.ts';
 import { gmailInbox, outlookInbox, sandboxInbox, type EmailProvider } from './providers/email.ts';
 import type { Connection, Store, StoredSignal, User } from './store.ts';
 
@@ -149,8 +149,10 @@ async function runSync(store: Store, user: User, deps: PipelineDeps): Promise<Sy
     try {
       await pullConnection(store, user, c, deps);
     } catch (err) {
-      c.status = 'error';
-      c.error = (err as Error).message;
+      // A missed ITEM_LOGIN_REQUIRED webhook still surfaces here; send the user to update mode, not a dead end.
+      const loginRequired = err instanceof PlaidApiError && err.errorCode === 'ITEM_LOGIN_REQUIRED';
+      c.status = loginRequired ? 'reauth_required' : 'error';
+      c.error = loginRequired ? LOGIN_REQUIRED_MESSAGE : (err as Error).message;
       errors.push(`${c.label}: ${c.error}`);
       inc('sync_connection_errors_total', { provider: c.provider });
       log.warn('connection sync failed', { connectionId: c.id, provider: c.provider, err });

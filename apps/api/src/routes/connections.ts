@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { entitlements, READABLE_SUBJECT_TERMS } from '@trialguard/core';
-import { encrypt, newId } from '../crypto.ts';
+import { decrypt, encrypt, newId } from '../crypto.ts';
 import { assert } from '../http.ts';
 import { PlaidBank } from '../providers/bank.ts';
 import { syncUser } from '../pipeline.ts';
@@ -68,9 +68,18 @@ export function register({ router, store, deps }: RouteDeps) {
     return { connection: publicConnection(conn), summary };
   });
 
-  router.on('DELETE', '/api/connections/:id', {}, ({ user, params }) => {
+  router.on('DELETE', '/api/connections/:id', {}, async ({ user, params, log }) => {
     const conn = store.data.connections.find((c) => c.id === params.id && c.userId === user.id);
     assert(conn, 'Connection not found', 404);
+    // Revoke our access at Plaid too, so the bank link doesn't outlive the connection. Best effort:
+    // a Plaid outage must not stop the user from disconnecting, and the token is deleted either way.
+    if (conn.provider === 'plaid' && conn.sealedToken && PlaidBank.configured()) {
+      try {
+        await new PlaidBank().removeItem(decrypt(conn.sealedToken));
+      } catch (err) {
+        log.warn('plaid item removal failed', { connectionId: conn.id, err });
+      }
+    }
     store.data.connections = store.data.connections.filter((c) => c !== conn);
     // Disconnecting removes the raw data that came through it.
     store.data.transactions = store.data.transactions.filter((t) => t.connectionId !== conn.id);

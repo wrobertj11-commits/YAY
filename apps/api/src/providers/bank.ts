@@ -49,6 +49,9 @@ export interface PlaidBankOptions {
 }
 
 /** A failed Plaid call. Keeps Plaid's documented error fields so callers can branch on `errorCode`. */
+/** Shown on a connection whose bank login expired (Plaid ITEM_LOGIN_REQUIRED), from the webhook or a failed sync. */
+export const LOGIN_REQUIRED_MESSAGE = 'Your bank needs you to sign in again. Reconnect to keep tracking charges.';
+
 export class PlaidApiError extends Error {
   endpoint: string;
   status: number;

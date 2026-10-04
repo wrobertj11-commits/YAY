@@ -36,7 +36,7 @@ import type { Logger } from '../log.ts';
 import { reportError } from '../log.ts';
 import { describe, inc } from '../metrics.ts';
 import { pullConnection, recompute, type PipelineDeps } from '../pipeline.ts';
-import { PLAID_DISCONNECTED_MESSAGE, PlaidApiError } from '../providers/bank.ts';
+import { LOGIN_REQUIRED_MESSAGE, PLAID_DISCONNECTED_MESSAGE, PlaidApiError } from '../providers/bank.ts';
 import type { Connection, Store, User } from '../store.ts';
 
 describe('plaid_webhooks_total', 'Plaid webhooks by type, code and result');
@@ -53,7 +53,7 @@ export type PlaidWebhook = z.infer<typeof zPlaidWebhook>;
 
 export type WebhookResult = 'processed' | 'ignored' | 'unknown_item' | 'failed' | 'timeout';
 
-export const LOGIN_REQUIRED_MESSAGE = 'Your bank needs you to sign in again. Reconnect to keep tracking charges.';
+export { LOGIN_REQUIRED_MESSAGE };
 export const EXPIRING_MESSAGE = 'Access to this bank expires soon. Reconnect to keep tracking charges.';
 
 /** What an ITEM webhook does to a connection. */
