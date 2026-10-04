@@ -58,6 +58,10 @@ export interface OutboxAlert extends Alert {
   /** Instance that claimed the alert, and when (lease). */
   claimedBy?: string;
   claimedAt?: string;
+  /** After a failed attempt: not before this time (exponential backoff). */
+  nextAttemptAt?: string;
+  /** Why a `skipped` alert was not sent (unsubscribed, item gone, ...). */
+  skipReason?: string;
   lastError?: string;
   sentAt?: string;
   readAt?: string;
