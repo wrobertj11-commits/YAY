@@ -29,18 +29,11 @@ export function AddSheet({ open, me, onClose, onAdded }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
-  useEffect(() => {
-    if (!open) {
-      setName('');
-      setMerchantId(undefined);
-      setAmount('');
-      setText('');
-      setError(null);
-    }
-  }, [open]);
+  // The parent mounts this sheet fresh each time it opens, so form state never leaks between uses.
+  const visibleSuggestions = name.trim() && !merchantId ? suggestions : [];
 
   useEffect(() => {
-    if (!name.trim() || merchantId) return setSuggestions([]);
+    if (!name.trim() || merchantId) return;
     const t = setTimeout(() => {
       api<{ id: string; name: string }[]>('GET', `/merchants?q=${encodeURIComponent(name)}`).then((r) => setSuggestions(r.slice(0, 5))).catch(() => {});
     }, 150);
@@ -107,9 +100,9 @@ export function AddSheet({ open, me, onClose, onAdded }: Props) {
                 autoFocus
               />
             </label>
-            {suggestions.length > 0 && (
+            {visibleSuggestions.length > 0 && (
               <div className="chips">
-                {suggestions.map((s) => (
+                {visibleSuggestions.map((s) => (
                   <button
                     type="button"
                     key={s.id}

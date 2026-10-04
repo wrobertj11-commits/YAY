@@ -12,5 +12,5 @@
     "skipLibCheck": true,
     "types": ["node"]
   },
-  "include": ["packages/core/src", "packages/core/test", "apps/api/src", "apps/api/test"]
+  "include": ["packages/core/src", "packages/core/test", "apps/api/src", "apps/api/test", "apps/api/scripts", "evals"]
 }

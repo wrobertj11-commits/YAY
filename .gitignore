@@ -2,3 +2,4 @@ node_modules/
 dist/
 apps/api/data/
 .env
+.claude/worktrees/

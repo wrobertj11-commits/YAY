@@ -3,6 +3,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import path from 'node:path';
 import { config } from './config.ts';
 import { Router } from './http.ts';
+import { reportError } from './log.ts';
 import type { PipelineDeps } from './pipeline.ts';
 import type { RateLimiter } from './ratelimit.ts';
 import { registerRoutes } from './routes/index.ts';
@@ -16,7 +17,7 @@ export function createRouter(store: Store, deps: PipelineDeps, limiter?: RateLim
 
 export function createApp(store: Store, deps: PipelineDeps, limiter?: RateLimiter) {
   const router = createRouter(store, deps, limiter);
-  return async function handle(req: IncomingMessage, res: ServerResponse) {
+  async function handle(req: IncomingMessage, res: ServerResponse) {
     if (await router.handle(req, res)) return;
     const pathname = new URL(req.url ?? '/', 'http://localhost').pathname;
     if (pathname.startsWith('/api/')) {
@@ -25,6 +26,14 @@ export function createApp(store: Store, deps: PipelineDeps, limiter?: RateLimite
       return;
     }
     serveStatic(pathname, res);
+  }
+  // node:http ignores the handler's return value, so failures must be caught here.
+  return (req: IncomingMessage, res: ServerResponse): void => {
+    handle(req, res).catch((err: unknown) => {
+      reportError(err, { source: 'http' });
+      if (!res.headersSent) res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end();
+    });
   };
 }
 

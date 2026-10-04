@@ -25,7 +25,7 @@ export const zText = (max: number) =>
   z
     .string()
     .max(max)
-    .transform((s) => s.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, '').trim());
+    .transform((s) => s.replace(/(?![\t\n\r])\p{Cc}/gu, '').trim());
 
 // ---------- shapes returned to clients ----------
 

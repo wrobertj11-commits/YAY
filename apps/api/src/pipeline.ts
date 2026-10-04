@@ -8,6 +8,7 @@ import {
   scheduleAlerts,
   toISODate,
   type EmailMessage,
+  type EmailSignal,
   type ItemEvent,
   type Source,
   type TrackedItem,
@@ -25,7 +26,7 @@ import type { Connection, Store, StoredSignal, User } from './store.ts';
 export interface PipelineDeps {
   bank: (c: Connection) => BankProvider;
   inbox: (c: Connection) => EmailProvider;
-  llm?: (email: EmailMessage) => Promise<import('@trialguard/core').EmailSignal | undefined>;
+  llm?: (email: EmailMessage) => Promise<EmailSignal | undefined>;
   clock: () => Date;
   /** When set, alerts that are already due go out as soon as a sync finishes. */
   notifier?: Notifier;

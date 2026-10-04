@@ -24,7 +24,7 @@ export function StatusBadge({ item }: { item: Item }) {
       return <span className="badge badge-danger">Charged after cancel</span>;
     case 'dismissed':
       return <span className="badge">Hidden</span>;
-    default:
+    case 'active':
       return item.priceChange && item.priceChange.newCents > item.priceChange.oldCents ? <span className="badge badge-warn">Price up</span> : null;
   }
 }

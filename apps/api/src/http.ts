@@ -1,6 +1,6 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { randomUUID } from 'node:crypto';
-import { z } from 'zod';
+import type { z } from 'zod';
 import { config } from './config.ts';
 import { safeEqual } from './crypto.ts';
 import { log, reportError, type Logger } from './log.ts';

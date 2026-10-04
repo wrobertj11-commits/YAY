@@ -56,7 +56,12 @@ export function App() {
   }, []);
 
   useEffect(() => {
-    if (signedIn) refresh().then((me) => me.connections.length === 0 && setConnecting(true)).catch(() => {});
+    if (!signedIn) return;
+    // Data fetch on sign-in: every setState inside refresh() runs after the request resolves, not synchronously.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    refresh()
+      .then((me) => me.connections.length === 0 && setConnecting(true))
+      .catch(() => {});
   }, [signedIn, refresh]);
 
   useEffect(() => {
@@ -164,8 +169,9 @@ export function App() {
         ))}
       </nav>
 
-      <AddSheet
-        open={adding}
+      {adding && (
+        <AddSheet
+        open
         me={data.me}
         onClose={() => setAdding(false)}
         onAdded={async (msg, itemId) => {
@@ -174,7 +180,8 @@ export function App() {
           await refresh();
           if (itemId) nav.item(itemId);
         }}
-      />
+        />
+      )}
 
       {toast && (
         <div className="toast" role="status">
