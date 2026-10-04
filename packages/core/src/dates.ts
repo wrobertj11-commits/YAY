@@ -1,3 +1,4 @@
+import { startOfLocalDay } from './tz.ts';
 import type { Cadence, ISODate } from './types.ts';
 
 const DAY_MS = 86_400_000;
@@ -53,9 +54,13 @@ export function nextOnOrAfter(start: ISODate, cadence: Cadence, today: ISODate, 
   return next;
 }
 
-/** Charges are assumed to post at noon UTC on their date. */
-export function chargeInstant(date: ISODate): Date {
-  return new Date(`${date}T12:00:00Z`);
+/**
+ * The earliest moment a charge dated `date` can post for someone in `timeZone`: local midnight.
+ * Merchants convert trials at any hour of the day, so anything that must happen "before the charge"
+ * (alerts, their lead times) is measured from the start of the user's local day, never from a guessed hour.
+ */
+export function chargeInstant(date: ISODate, timeZone = 'UTC'): Date {
+  return startOfLocalDay(date, timeZone);
 }
 
 export function median(values: number[]): number {

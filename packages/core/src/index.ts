@@ -1,5 +1,6 @@
 export * from './types.ts';
 export * from './dates.ts';
+export * from './tz.ts';
 export * from './money.ts';
 export * from './merchants.ts';
 export * from './normalize.ts';

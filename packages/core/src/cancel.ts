@@ -1,5 +1,5 @@
 import { getMerchant } from './merchants.ts';
-import type { CancelDifficulty, TrackedItem } from './types.ts';
+import type { CancelDifficulty, ISODate, TrackedItem } from './types.ts';
 
 export interface StateRight {
   state: string;
@@ -11,6 +11,13 @@ export interface StateRight {
  * Cancellation rights cited in cancel guides. The FTC click-to-cancel rule was vacated in
  * July 2025, so guides cite ROSCA and state auto-renewal laws. Keep summaries plain and short;
  * they are information, not legal advice.
+ *
+ * Coverage is partial on purpose: only the states below have a summary. Other states are believed to have
+ * automatic-renewal laws too, and are listed here as leads for counsel, not as statements of law. Which of
+ * them apply to consumer subscriptions, what they require and when they took effect is to be confirmed by
+ * counsel before any summary is added: CT, DC, DE, FL, GA, HI, ID, IL, LA, ME, MN, NC, ND, NH, OR, SD, TN, UT.
+ * The list itself is not exhaustive and also needs counsel's check (newer or amended laws included).
+ * Users in those states get the federal entry only. Any wording change here bumps RIGHTS_CONTENT_VERSION.
  */
 const FEDERAL: StateRight = {
   state: 'US',
@@ -46,6 +53,18 @@ const STATE_RIGHTS: Record<string, StateRight> = {
   },
 };
 
+/**
+ * When counsel last reviewed the rights wording (FEDERAL and STATE_RIGHTS), or null if never.
+ * No lawyer has reviewed it yet. Set it only after a review of the current RIGHTS_CONTENT_VERSION.
+ */
+export const RIGHTS_LAST_REVIEWED: ISODate | null = null;
+
+/** True until counsel signs off on the current wording; clients must show it as unreviewed general information. */
+export const RIGHTS_NEEDS_COUNSEL_REVIEW: boolean = true;
+
+/** Identifies the wording users saw (support and audit trails). Bump on any edit to FEDERAL or STATE_RIGHTS. */
+export const RIGHTS_CONTENT_VERSION = '2026-10-03';
+
 export function cancellationRights(state?: string): StateRight[] {
   const local = state ? STATE_RIGHTS[state.toUpperCase()] : undefined;
   return local ? [local, FEDERAL] : [FEDERAL];
@@ -61,6 +80,10 @@ export interface CancelPlan {
   phone?: string;
   conciergeAvailable: boolean;
   rights: StateRight[];
+  /** Review status of `rights`, so the UI can label unreviewed legal content as such. */
+  rightsLastReviewed: ISODate | null;
+  rightsNeedCounselReview: boolean;
+  rightsContentVersion: string;
   tips: string[];
 }
 
@@ -71,6 +94,11 @@ const GOOGLE_PLAY_URL = 'https://play.google.com/store/account/subscriptions';
 export function buildCancelPlan(item: TrackedItem, userState?: string): CancelPlan {
   const merchant = getMerchant(item.merchantId);
   const rights = cancellationRights(userState);
+  const review = {
+    rightsLastReviewed: RIGHTS_LAST_REVIEWED,
+    rightsNeedCounselReview: RIGHTS_NEEDS_COUNSEL_REVIEW,
+    rightsContentVersion: RIGHTS_CONTENT_VERSION,
+  };
   const tips = [
     'Expect a retention offer. You can say no; it does not affect your right to cancel.',
     'Screenshot the final confirmation screen or save the email. We use it as proof.',
@@ -86,6 +114,7 @@ export function buildCancelPlan(item: TrackedItem, userState?: string): CancelPl
       difficulty: 'easy',
       conciergeAvailable: false,
       rights,
+      ...review,
       tips: ['This is billed by Apple, so cancel it in your Apple account, not with the app itself.', ...tips],
     };
   }
@@ -97,6 +126,7 @@ export function buildCancelPlan(item: TrackedItem, userState?: string): CancelPl
       difficulty: 'easy',
       conciergeAvailable: false,
       rights,
+      ...review,
       tips: ['This is billed by Google Play, so cancel it in the Play Store.', ...tips],
     };
   }
@@ -111,6 +141,7 @@ export function buildCancelPlan(item: TrackedItem, userState?: string): CancelPl
       phone: merchant.phone,
       conciergeAvailable: Boolean(merchant.conciergeSupported),
       rights,
+      ...review,
       tips,
     };
   }
@@ -126,6 +157,7 @@ export function buildCancelPlan(item: TrackedItem, userState?: string): CancelPl
       difficulty: 'medium',
       conciergeAvailable: false,
       rights,
+      ...review,
       tips,
     };
   }
@@ -139,6 +171,7 @@ export function buildCancelPlan(item: TrackedItem, userState?: string): CancelPl
     difficulty: 'medium',
     conciergeAvailable: false,
     rights,
+    ...review,
     tips,
   };
 }

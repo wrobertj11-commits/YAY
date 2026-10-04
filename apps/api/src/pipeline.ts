@@ -1,7 +1,9 @@
 import {
+  alertAllowed,
   alertsForEvents,
   detectRecurring,
   extractEmailSignal,
+  isEventAlert,
   isRelevantEmail,
   needsLlmExtraction,
   reconcile,
@@ -114,8 +116,11 @@ export function recompute(store: Store, user: User, deps: Pick<PipelineDeps, 'cl
     ...scheduleAlerts(items, user.plan, now, user.alertPrefs),
   ].filter((a) => !settled.has(a.id));
   for (const a of fresh) if (!outbox.some((o) => o.id === a.id)) inc('alerts_scheduled_total', { type: a.type });
+  const rebuilt = new Set(fresh.map((a) => a.id));
   store.data.alerts = [
-    ...outbox.filter((a) => a.userId !== user.id || a.status !== 'pending'),
+    // Event alerts are built only when their event fires, so one still held (e.g. through quiet hours) survives
+    // the rebuild unless this run re-created it or the user has since switched its type or channel off.
+    ...outbox.filter((a) => a.userId !== user.id || a.status !== 'pending' || (isEventAlert(a) && !rebuilt.has(a.id) && alertAllowed(a, user.alertPrefs))),
     ...fresh.map((a) => ({ ...a, userId: user.id, status: 'pending' as const, attempts: 0 })),
   ];
 
