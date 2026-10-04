@@ -37,7 +37,7 @@ export function cleanDescriptor(description: string): string {
     .map((t) => t.replace(/^\.+|\.+$/g, ''))
     .filter((t) => t && !NOISE_TOKENS.has(t));
   // Drop a trailing state code (and the city before it is usually unrecoverable, so keep it simple).
-  while (tokens.length > 1 && STATE_CODES.has(tokens[tokens.length - 1])) tokens.pop();
+  while (tokens.length > 1 && STATE_CODES.has(tokens[tokens.length - 1] ?? '')) tokens.pop();
   return tokens.join(' ').trim();
 }
 
@@ -47,7 +47,7 @@ function titleCase(s: string): string {
     .split(' ')
     .filter(Boolean)
     .slice(0, 3)
-    .map((w) => w[0].toUpperCase() + w.slice(1))
+    .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
     .join(' ');
 }
 

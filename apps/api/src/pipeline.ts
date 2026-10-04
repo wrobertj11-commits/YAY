@@ -13,6 +13,8 @@ import {
   type TrackedItem,
 } from '@trialguard/core';
 import { config } from './config.ts';
+import { log } from './log.ts';
+import { inc, timed } from './metrics.ts';
 import { decrypt, newId } from './crypto.ts';
 import { llmExtract, mergeSignals } from './llm.ts';
 import { consoleNotifier, dispatchDueAlerts, type Notifier } from './notify.ts';
@@ -51,12 +53,13 @@ export async function ingestEmail(store: Store, user: User, email: EmailMessage,
   let signal = extractEmailSignal(email);
   if (deps.llm && needsLlmExtraction(signal)) signal = mergeSignals(signal, await deps.llm(email));
   if (!signal) return undefined;
+  inc('email_signals_total', { extractor: signal.extractedBy, kind: signal.kind, source });
   const stored: StoredSignal = { ...signal, userId: user.id, source };
   store.data.signals.push(stored);
   return stored;
 }
 
-async function pullConnection(store: Store, user: User, c: Connection, deps: PipelineDeps): Promise<void> {
+export async function pullConnection(store: Store, user: User, c: Connection, deps: PipelineDeps): Promise<void> {
   const today = toISODate(deps.clock());
   const accessToken = c.sealedToken ? decrypt(c.sealedToken) : undefined;
   if (c.type === 'bank') {
@@ -100,14 +103,21 @@ export function recompute(store: Store, user: User, deps: Pick<PipelineDeps, 'cl
 
   store.data.items = [...store.data.items.filter((i) => i.userId !== user.id), ...items.map((i) => ({ ...(i as TrackedItem), userId: user.id }))];
 
-  // Event alerts go out now. Scheduled alerts are rebuilt: unsent ones are replaced, sent ones kept.
+  for (const e of events) inc('detection_events_total', { type: e.type });
+
+  // Event alerts go out now. Scheduled alerts are rebuilt: pending ones are replaced; anything already
+  // claimed, sent, failed or skipped is kept, and its id (the send-once key) is never re-queued.
   const outbox = store.data.alerts;
-  const sentIds = new Set(outbox.filter((a) => a.userId === user.id && a.sentAt).map((a) => a.id));
+  const settled = new Set(outbox.filter((a) => a.userId === user.id && a.status !== 'pending').map((a) => a.id));
   const fresh = [
     ...alertsForEvents(events, items, user.plan, now, user.alertPrefs),
     ...scheduleAlerts(items, user.plan, now, user.alertPrefs),
-  ].filter((a) => !sentIds.has(a.id));
-  store.data.alerts = [...outbox.filter((a) => a.userId !== user.id || a.sentAt), ...fresh.map((a) => ({ ...a, userId: user.id }))];
+  ].filter((a) => !settled.has(a.id));
+  for (const a of fresh) if (!outbox.some((o) => o.id === a.id)) inc('alerts_scheduled_total', { type: a.type });
+  store.data.alerts = [
+    ...outbox.filter((a) => a.userId !== user.id || a.status !== 'pending'),
+    ...fresh.map((a) => ({ ...a, userId: user.id, status: 'pending' as const, attempts: 0 })),
+  ];
 
   if (!user.firstFoundAt && items.length) user.firstFoundAt = now.toISOString();
   store.save();
@@ -116,16 +126,28 @@ export function recompute(store: Store, user: User, deps: Pick<PipelineDeps, 'cl
 
 /** Full sync for one user: pull every connection, then recompute. */
 export async function syncUser(store: Store, user: User, deps: PipelineDeps = defaultDeps): Promise<SyncSummary> {
+  return timed('sync_duration_seconds', {}, () => runSync(store, user, deps));
+}
+
+async function runSync(store: Store, user: User, deps: PipelineDeps): Promise<SyncSummary> {
   const errors: string[] = [];
   for (const c of store.data.connections.filter((c) => c.userId === user.id)) {
+    // A connection waiting for the user to re-link would only fail again.
+    if (c.status === 'reauth_required') {
+      errors.push(`${c.label}: needs to be reconnected`);
+      continue;
+    }
     try {
       await pullConnection(store, user, c, deps);
     } catch (err) {
       c.status = 'error';
       c.error = (err as Error).message;
       errors.push(`${c.label}: ${c.error}`);
+      inc('sync_connection_errors_total', { provider: c.provider });
+      log.warn('connection sync failed', { connectionId: c.id, provider: c.provider, err });
     }
   }
+  inc('sync_runs_total', { result: errors.length ? 'partial' : 'ok' });
   const { events, newItems } = recompute(store, user, deps);
   user.lastSyncAt = deps.clock().toISOString();
   // A trial found inside its 48h window should warn the user now, not on the next tick.

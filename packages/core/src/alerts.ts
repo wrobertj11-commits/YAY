@@ -1,15 +1,12 @@
 import { chargeInstant } from './dates.ts';
 import { formatCents } from './money.ts';
 import { entitlements } from './plans.ts';
+import { DEFAULT_ALERT_PREFS, type AlertPrefs } from './prefs.ts';
 import type { ItemEvent } from './reconcile.ts';
 import type { Alert, AlertChannel, Cadence, Plan, TrackedItem } from './types.ts';
 
 export const ALERT_LEAD_HOURS = [48, 24] as const;
 
-export interface AlertPrefs {
-  push: boolean;
-  email: boolean;
-}
 
 const HOUR_MS = 3_600_000;
 const CADENCE_SUFFIX: Record<Cadence, string> = { weekly: '/wk', monthly: '/mo', quarterly: '/qtr', annual: '/yr' };
@@ -40,7 +37,7 @@ export function alertedTrialIds(items: TrackedItem[], plan: Plan): Set<string> {
  * If the 48h mark is already past (a trial found late), the alert goes out immediately,
  * as long as the charge itself is still in the future.
  */
-export function scheduleAlerts(items: TrackedItem[], plan: Plan, now: Date, prefs: AlertPrefs = { push: true, email: true }): Alert[] {
+export function scheduleAlerts(items: TrackedItem[], plan: Plan, now: Date, prefs: AlertPrefs = DEFAULT_ALERT_PREFS): Alert[] {
   const alerts: Alert[] = [];
   const trialIds = alertedTrialIds(items, plan);
 
@@ -89,7 +86,7 @@ export function scheduleAlerts(items: TrackedItem[], plan: Plan, now: Date, pref
 }
 
 /** Immediate alerts for things detection just found (price hikes, charges after cancel, verified cancels). */
-export function alertsForEvents(events: ItemEvent[], items: TrackedItem[], plan: Plan, now: Date, prefs: AlertPrefs = { push: true, email: true }): Alert[] {
+export function alertsForEvents(events: ItemEvent[], items: TrackedItem[], plan: Plan, now: Date, prefs: AlertPrefs = DEFAULT_ALERT_PREFS): Alert[] {
   const ent = entitlements(plan);
   const byId = new Map(items.map((i) => [i.id, i]));
   const alerts: Alert[] = [];

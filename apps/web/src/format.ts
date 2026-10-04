@@ -48,7 +48,7 @@ export const SOURCE_LABEL: Record<string, string> = {
   google_play: 'Google Play',
 };
 
-export const RAIL_LABEL: Record<string, string> = {
+export const RAIL_LABEL: Record<Item['rail'], string> = {
   card: '',
   paypal: 'via PayPal',
   app_store: 'via App Store',
@@ -59,5 +59,5 @@ const PALETTE = ['#0f766e', '#7c3aed', '#c2410c', '#2563eb', '#be123c', '#4d7c0f
 export function avatarColor(name: string): string {
   let h = 0;
   for (const c of name) h = (h * 31 + c.charCodeAt(0)) >>> 0;
-  return PALETTE[h % PALETTE.length];
+  return PALETTE[h % PALETTE.length] ?? '#0f766e';
 }

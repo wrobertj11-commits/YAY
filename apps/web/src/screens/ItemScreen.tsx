@@ -55,7 +55,7 @@ export function ItemScreen({ id, startInCancel, me, nav, onChanged, toast }: Pro
         }}
         onConcierge={() =>
           act(async () => {
-            const r = await api<{ concierge: { feeCents: number } }>('POST', `/items/${id}/cancel`, { action: 'concierge' });
+            const r = await api<{ concierge: { feeCents: number } }>('POST', `/items/${id}/concierge`, {});
             toast(`Concierge requested. Fee: ${money(r.concierge.feeCents)}.`);
           })
         }

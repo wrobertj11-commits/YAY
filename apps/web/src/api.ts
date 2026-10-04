@@ -8,9 +8,19 @@ export interface Connection {
   type: 'bank' | 'gmail' | 'outlook';
   provider: string;
   label: string;
-  status: 'active' | 'error';
+  status: 'active' | 'error' | 'reauth_required' | 'pending_expiration';
   error?: string;
   lastSyncedAt?: string;
+}
+
+export type AlertType = 'trial_converting' | 'renewal' | 'price_increase' | 'charge_after_cancel' | 'cancel_verified';
+
+export interface AlertPrefs {
+  push: boolean;
+  email: boolean;
+  types: Record<AlertType, boolean>;
+  quietHours: { start: string; end: string } | null;
+  timeZone: string;
 }
 
 export interface Me {
@@ -18,7 +28,9 @@ export interface Me {
   email: string;
   plan: 'free' | 'plus';
   state?: string;
-  alertPrefs: { push: boolean; email: boolean };
+  alertPrefs: AlertPrefs;
+  /** Dev builds allow plan switching and email-only sign-in. */
+  devMode: boolean;
   forwardingAddress: string;
   entitlements: { maxTrialAlerts: number | null; priceHikeAlerts: boolean; postCancelCheck: boolean; savingsTracker: boolean };
   connections: Connection[];

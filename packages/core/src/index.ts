@@ -7,6 +7,7 @@ export * from './recurring.ts';
 export * from './email.ts';
 export * from './reconcile.ts';
 export * from './alerts.ts';
+export * from './prefs.ts';
 export * from './savings.ts';
 export * from './plans.ts';
 export * from './cancel.ts';

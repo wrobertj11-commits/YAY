@@ -60,6 +60,8 @@ export function chargeInstant(date: ISODate): Date {
 
 export function median(values: number[]): number {
   const s = [...values].sort((a, b) => a - b);
+  if (!s.length) return NaN;
   const mid = Math.floor(s.length / 2);
-  return s.length % 2 ? s[mid] : (s[mid - 1] + s[mid]) / 2;
+  const hi = s[mid] as number;
+  return s.length % 2 ? hi : ((s[mid - 1] as number) + hi) / 2;
 }

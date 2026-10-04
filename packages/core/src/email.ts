@@ -52,6 +52,7 @@ interface FoundDate {
 }
 
 function makeDate(y: number, m: number, d: number): ISODate | undefined {
+  if (!Number.isInteger(y) || !Number.isInteger(m) || !Number.isInteger(d)) return undefined;
   if (m < 0 || m > 11 || d < 1 || d > 31) return undefined;
   const dt = new Date(Date.UTC(y, m, d));
   if (dt.getUTCMonth() !== m) return undefined;
@@ -70,16 +71,19 @@ export function findDates(text: string, reference: ISODate): FoundDate[] {
     return thisYear < addDays(reference, -60) ? makeDate(refYear + 1, m, d) : thisYear;
   };
 
+  // Missing groups become NaN / -1, which makeDate rejects.
+  const num = (s: string | undefined) => (s === undefined ? NaN : Number(s));
+  const month = (s: string | undefined) => (s === undefined ? -1 : MONTHS.indexOf(s.slice(0, 3).toLowerCase()));
   const patterns: [RegExp, (m: RegExpExecArray) => ISODate | undefined][] = [
-    [/\b(\d{4})-(\d{2})-(\d{2})\b/g, (m) => makeDate(+m[1], +m[2] - 1, +m[3])],
-    [/\b(\d{1,2})\/(\d{1,2})\/(\d{2,4})\b/g, (m) => withYear(+m[1] - 1, +m[2], +m[3])],
+    [/\b(\d{4})-(\d{2})-(\d{2})\b/g, (m) => makeDate(num(m[1]), num(m[2]) - 1, num(m[3]))],
+    [/\b(\d{1,2})\/(\d{1,2})\/(\d{2,4})\b/g, (m) => withYear(num(m[1]) - 1, num(m[2]), num(m[3]))],
     [
       new RegExp(`\\b${MONTH_RE}\\s+(\\d{1,2})(?:st|nd|rd|th)?(?:,?\\s+(\\d{4}))?`, 'gi'),
-      (m) => withYear(MONTHS.indexOf(m[1].slice(0, 3).toLowerCase()), +m[2], m[3] ? +m[3] : undefined),
+      (m) => withYear(month(m[1]), num(m[2]), m[3] ? num(m[3]) : undefined),
     ],
     [
       new RegExp(`\\b(\\d{1,2})(?:st|nd|rd|th)?\\s+${MONTH_RE}(?:,?\\s+(\\d{4}))?`, 'gi'),
-      (m) => withYear(MONTHS.indexOf(m[2].slice(0, 3).toLowerCase()), +m[1], m[3] ? +m[3] : undefined),
+      (m) => withYear(month(m[2]), num(m[1]), m[3] ? num(m[3]) : undefined),
     ],
   ];
 
@@ -109,7 +113,7 @@ export function findPrices(text: string): FoundPrice[] {
   const out: FoundPrice[] = [];
   const re = /(?:US)?\$\s?(\d[\d,]*(?:\.\d{1,2})?)|(\d[\d,]*\.\d{2})\s?(?:USD|dollars)/gi;
   for (let m = re.exec(text); m; m = re.exec(text)) {
-    const cents = parseMoney(m[1] ?? m[2]);
+    const cents = parseMoney(m[1] ?? m[2] ?? '');
     if (cents === undefined || cents === 0) continue;
     const after = text.slice(m.index + m[0].length, m.index + m[0].length + 20).trimStart().replace(/^(plus tax|\+ ?tax)\s*/i, '');
     const cadence = CADENCE_WORDS.find(([p]) => p.test(after))?.[1];
@@ -134,9 +138,10 @@ export function findTrialLength(text: string): { days: number; months?: number }
   ];
   for (const p of patterns) {
     const m = text.match(p);
-    if (!m) continue;
-    const n = /^\d+$/.test(m[1]) ? Number(m[1]) : NUMBER_WORDS[m[1].toLowerCase()];
-    const u = m[2].toLowerCase();
+    const count = m?.[1];
+    const u = m?.[2]?.toLowerCase();
+    if (!count || !u) continue;
+    const n = /^\d+$/.test(count) ? Number(count) : NUMBER_WORDS[count.toLowerCase()];
     if (!n) continue;
     if (u === 'month') return { days: n * 30, months: n };
     return { days: u === 'week' ? n * 7 : n };
@@ -160,12 +165,12 @@ function dateNearTrigger(text: string, dates: FoundDate[], after: ISODate): ISOD
     }
   }
   CHARGE_TRIGGERS.lastIndex = 0;
-  return best?.date ?? (future.length === 1 ? future[0].date : undefined);
+  return best?.date ?? (future.length === 1 ? future[0]?.date : undefined);
 }
 
 function displayName(from: string): string | undefined {
   const m = from.match(/^\s*"?([^"<]+?)"?\s*</);
-  const name = m?.[1].trim();
+  const name = m?.[1]?.trim();
   if (!name || /^(no-?reply|billing|team|support|info)$/i.test(name)) return undefined;
   return name.replace(/\s+(team|billing|support)$/i, '');
 }
@@ -226,13 +231,13 @@ export function extractEmailSignal(email: EmailMessage): EmailSignal | undefined
     if (trial) confidence += 0.05;
   } else if (kind === 'price_increase') {
     const fromTo = text.match(/from \$\s?(\d[\d,]*(?:\.\d{1,2})?)[^$]{0,40}?to \$\s?(\d[\d,]*(?:\.\d{1,2})?)/i);
-    if (fromTo) {
+    if (fromTo?.[1] && fromTo[2]) {
       signal.oldPriceCents = parseMoney(fromTo[1]);
       signal.priceCents = parseMoney(fromTo[2]);
     } else if (prices.length >= 2) {
       const sorted = [...prices].sort((a, b) => a.cents - b.cents);
-      signal.oldPriceCents = sorted[0].cents;
-      signal.priceCents = sorted[sorted.length - 1].cents;
+      signal.oldPriceCents = sorted[0]?.cents;
+      signal.priceCents = sorted[sorted.length - 1]?.cents;
     } else {
       signal.priceCents = prices[0]?.cents;
     }

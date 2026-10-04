@@ -1,4 +1,5 @@
 import { MERCHANTS } from '@trialguard/core';
+import { reportError } from './log.ts';
 import { dispatchDueAlerts, type Notifier } from './notify.ts';
 import { syncUser, type PipelineDeps } from './pipeline.ts';
 import type { Store } from './store.ts';
@@ -9,7 +10,7 @@ export async function dailyRecheck(store: Store, deps: PipelineDeps): Promise<vo
     try {
       await syncUser(store, user, deps);
     } catch (err) {
-      console.error(`[jobs] daily re-check failed for ${user.id}`, err);
+      reportError(err, { job: 'daily-recheck', userId: user.id });
     }
   }
 }

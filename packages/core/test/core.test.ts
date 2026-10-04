@@ -10,6 +10,7 @@ import {
   findDates,
   isRelevantEmail,
   markCancelled,
+  normalizeAlertPrefs,
   normalizeMerchant,
   reconcile,
   scheduleAlerts,
@@ -21,6 +22,13 @@ import {
 } from '../src/index.ts';
 
 const NOW = '2026-10-03T15:00:00Z';
+
+/** Indexed access that fails the test (instead of returning undefined) when the element is missing. */
+function at<T>(list: readonly T[], i: number): T {
+  const v = list[i];
+  assert.ok(v !== undefined, `expected an element at index ${i} (length ${list.length})`);
+  return v;
+}
 const TODAY = '2026-10-03';
 let seq = 0;
 const newId = () => `item_${++seq}`;
@@ -67,7 +75,7 @@ describe('detectRecurring', () => {
   const months = ['2026-05-15', '2026-06-15', '2026-07-15', '2026-08-15', '2026-09-15'];
 
   it('finds monthly subscriptions and predicts the next charge', () => {
-    const [rc] = detectRecurring(months.map((d) => txn(d, 'NETFLIX.COM', 1549)), { today: TODAY });
+    const rc = at(detectRecurring(months.map((d) => txn(d, 'NETFLIX.COM', 1549)), { today: TODAY }), 0);
     assert.equal(rc.name, 'Netflix');
     assert.equal(rc.cadence, 'monthly');
     assert.equal(rc.nextChargeDate, '2026-10-15');
@@ -76,7 +84,7 @@ describe('detectRecurring', () => {
 
   it('keeps a price increase in the series and records the history', () => {
     const t = months.map((d, i) => txn(d, 'NETFLIX.COM', i < 4 ? 1549 : 1799));
-    const [rc] = detectRecurring(t, { today: TODAY });
+    const rc = at(detectRecurring(t, { today: TODAY }), 0);
     assert.equal(rc.amountCents, 1799);
     assert.deepEqual(rc.priceHistory.map((p) => p.amountCents), [1549, 1799]);
   });
@@ -199,16 +207,16 @@ describe('reconcile: one item tracks its whole life', () => {
   it('creates a trial from email, then converts it when the first bank charge lands', () => {
     const first = reconcile({ items: [], transactions: [], recurring: [], signals: [signal], today: TODAY, now: NOW, newId });
     assert.equal(first.items.length, 1);
-    const trial = first.items[0];
+    const trial = at(first.items, 0);
     assert.equal(trial.status, 'trial');
     assert.equal(trial.trialEndsAt, '2026-10-08');
-    assert.equal(first.events[0].type, 'new_item');
+    assert.equal(at(first.events, 0).type, 'new_item');
 
     const charge = txn('2026-10-08', 'HEADSPACE.COM', 1299, 'hs1');
     const later = reconcile({ items: first.items, transactions: [charge], recurring: [], signals: [signal], today: '2026-10-09', now: NOW, newId });
     assert.equal(later.items.length, 1, 'email trial and bank charge merge into one item');
-    assert.equal(later.items[0].status, 'active');
-    assert.equal(later.items[0].nextChargeDate, '2026-11-08');
+    assert.equal(at(later.items, 0).status, 'active');
+    assert.equal(at(later.items, 0).nextChargeDate, '2026-11-08');
     assert.deepEqual(later.events.map((e) => e.type), ['trial_converted']);
   });
 
@@ -221,17 +229,17 @@ describe('reconcile: one item tracks its whole life', () => {
 
   it('verifies a cancellation once the expected charge date passes with no charge', () => {
     const { items } = reconcile({ items: [], transactions: [], recurring: [], signals: [signal], today: TODAY, now: NOW, newId });
-    const cancelled = markCancelled(items[0], TODAY, NOW);
+    const cancelled = markCancelled(at(items, 0), TODAY, NOW);
     const pending = reconcile({ items: [cancelled], transactions: [], recurring: [], signals: [], today: '2026-10-10', now: NOW, newId });
-    assert.equal(pending.items[0].status, 'cancel_pending');
+    assert.equal(at(pending.items, 0).status, 'cancel_pending');
     const done = reconcile({ items: pending.items, transactions: [], recurring: [], signals: [], today: '2026-10-14', now: NOW, newId });
-    assert.equal(done.items[0].status, 'cancel_verified');
-    assert.equal(done.events[0].type, 'cancel_verified');
+    assert.equal(at(done.items, 0).status, 'cancel_verified');
+    assert.equal(at(done.events, 0).type, 'cancel_verified');
   });
 
   it('flags a charge after cancellation (post-cancel check)', () => {
     const { items } = reconcile({ items: [], transactions: [], recurring: [], signals: [signal], today: TODAY, now: NOW, newId });
-    const cancelled = markCancelled(items[0], TODAY, NOW);
+    const cancelled = markCancelled(at(items, 0), TODAY, NOW);
     const res = reconcile({
       items: [cancelled],
       transactions: [txn('2026-10-08', 'HEADSPACE.COM', 1299, 'sneaky')],
@@ -241,15 +249,15 @@ describe('reconcile: one item tracks its whole life', () => {
       now: NOW,
       newId,
     });
-    assert.equal(res.items[0].status, 'charged_after_cancel');
-    assert.deepEqual(res.items[0].postCancelChargeIds, ['sneaky']);
+    assert.equal(at(res.items, 0).status, 'charged_after_cancel');
+    assert.deepEqual(at(res.items, 0).postCancelChargeIds, ['sneaky']);
   });
 
   it('turns a charge-history price increase into a price change', () => {
     const t = ['2026-06-15', '2026-07-15', '2026-08-15', '2026-09-15'].map((d, i) => txn(d, 'NETFLIX.COM', i < 3 ? 1549 : 1799));
     const recurring = detectRecurring(t, { today: TODAY });
     const res = reconcile({ items: [], transactions: t, recurring, signals: [], today: TODAY, now: NOW, newId });
-    assert.deepEqual(res.items[0].priceChange, { oldCents: 1549, newCents: 1799, effectiveDate: '2026-09-15', detectedFrom: 'charges' });
+    assert.deepEqual(at(res.items, 0).priceChange, { oldCents: 1549, newCents: 1799, effectiveDate: '2026-09-15', detectedFrom: 'charges' });
     assert.ok(res.events.some((e) => e.type === 'price_increase'));
   });
 
@@ -257,10 +265,10 @@ describe('reconcile: one item tracks its whole life', () => {
     const t = ['2026-08-15', '2026-09-15'].map((d) => txn(d, 'SPOTIFY', 1199));
     const recurring = detectRecurring(t, { today: TODAY });
     const first = reconcile({ items: [], transactions: t, recurring, signals: [], today: TODAY, now: NOW, newId });
-    const dismissed: TrackedItem = { ...first.items[0], status: 'dismissed' };
+    const dismissed: TrackedItem = { ...at(first.items, 0), status: 'dismissed' };
     const again = reconcile({ items: [dismissed], transactions: t, recurring, signals: [], today: TODAY, now: NOW, newId });
     assert.equal(again.items.length, 1);
-    assert.equal(again.items[0].status, 'dismissed');
+    assert.equal(at(again.items, 0).status, 'dismissed');
   });
 });
 
@@ -270,7 +278,7 @@ describe('alerts', () => {
     createManualItem({ name: id, amountCents: 999, cadence: 'monthly', date: ends, isTrial: true }, id, NOW);
 
   it('schedules 48h and 24h alerts before a trial converts', () => {
-    const alerts = scheduleAlerts([trial('t1', '2026-10-10')], 'plus', now, { push: true, email: false });
+    const alerts = scheduleAlerts([trial('t1', '2026-10-10')], 'plus', now, normalizeAlertPrefs({ push: true, email: false }));
     assert.deepEqual(alerts.map((a) => [a.leadHours, a.sendAt]), [
       [48, '2026-10-08T12:00:00.000Z'],
       [24, '2026-10-09T12:00:00.000Z'],
@@ -278,10 +286,10 @@ describe('alerts', () => {
   });
 
   it('sends a single catch-up alert when found inside the 48h window', () => {
-    const alerts = scheduleAlerts([trial('t1', '2026-10-05')], 'plus', now, { push: true, email: false });
+    const alerts = scheduleAlerts([trial('t1', '2026-10-05')], 'plus', now, normalizeAlertPrefs({ push: true, email: false }));
     assert.equal(alerts.length, 2);
-    assert.equal(alerts[0].sendAt, now.toISOString());
-    assert.equal(alerts[1].leadHours, 24);
+    assert.equal(at(alerts, 0).sendAt, now.toISOString());
+    assert.equal(at(alerts, 1).leadHours, 24);
   });
 
   it('caps Free plan trial alerts at the 3 soonest trials', () => {
@@ -297,7 +305,7 @@ describe('alerts', () => {
     };
     const ev = [{ type: 'price_increase' as const, itemId: 'n' }];
     assert.equal(alertsForEvents(ev, [item], 'free', now).length, 0);
-    const [a] = alertsForEvents(ev, [item], 'plus', now, { push: true, email: false });
+    const a = at(alertsForEvents(ev, [item], 'plus', now, normalizeAlertPrefs({ push: true, email: false })), 0);
     assert.match(a.body, /\$15\.49 → \$17\.99\/mo/);
     assert.match(a.body, /\$30\.00 more a year/);
   });
@@ -319,7 +327,7 @@ describe('savings and cancel plans', () => {
     const item: TrackedItem = { ...createManualItem({ name: 'X', amountCents: 999, cadence: 'monthly', date: TODAY, isTrial: false }, 'x', NOW), rail: 'app_store' };
     const plan = buildCancelPlan(item, 'CA');
     assert.equal(plan.method, 'app_store');
-    assert.match(plan.rights[0].law, /California/);
+    assert.match(at(plan.rights, 0).law, /California/);
   });
 
   it('caps the concierge fee at $20', () => {

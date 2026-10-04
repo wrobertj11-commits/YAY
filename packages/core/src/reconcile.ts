@@ -263,8 +263,9 @@ export function reconcile(input: ReconcileInput): ReconcileResult {
     addUnique(item.sources, 'bank');
 
     const hist = rc.priceHistory;
-    if (hist.length >= 2) {
-      const [before, after] = hist.slice(-2);
+    const before = hist[hist.length - 2];
+    const after = hist[hist.length - 1];
+    if (before && after) {
       const isNew = prevPrice === undefined || prevPrice !== after.amountCents;
       const recent = daysBetween(after.date, today) <= PRICE_CHANGE_RECENCY_DAYS;
       if (after.amountCents > before.amountCents && recent && (item.priceChange?.newCents !== after.amountCents)) {
@@ -306,7 +307,7 @@ export function reconcile(input: ReconcileInput): ReconcileResult {
       if (after.length) {
         item.status = 'charged_after_cancel';
         item.postCancelChargeIds = after.map(({ t }) => t.id);
-        events.push({ type: 'charge_after_cancel', itemId: item.id, transactionId: after[0].t.id });
+        events.push({ type: 'charge_after_cancel', itemId: item.id, transactionId: after[0]?.t.id });
         touch(item);
         continue;
       }

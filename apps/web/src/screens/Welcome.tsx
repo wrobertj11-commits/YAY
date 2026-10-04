@@ -15,7 +15,8 @@ export function WelcomeScreen({ onSignedIn }: { onSignedIn: (token: string) => v
     setBusy(true);
     setError(null);
     try {
-      const r = await api<{ token: string }>('POST', mode === 'signup' ? '/auth/signup' : '/auth/login', { email, state: state || undefined });
+      const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+      const r = await api<{ token: string }>('POST', mode === 'signup' ? '/auth/signup' : '/auth/login', mode === 'signup' ? { email, state: state || undefined, timeZone } : { email });
       onSignedIn(r.token);
     } catch (err) {
       if (err instanceof ApiError && err.status === 409) setMode('login');

@@ -70,12 +70,16 @@ function priceHistory(txns: Transaction[]): PricePoint[] {
  * This keeps a price increase in the run while dropping one-off purchases of a different size.
  */
 function recurringRun(txns: Transaction[]): Transaction[] {
-  const run: Transaction[] = [txns[txns.length - 1]];
-  for (let i = txns.length - 2; i >= 0; i--) {
-    const t = txns[i];
-    const prev = run[run.length - 1];
+  const newest = txns[txns.length - 1];
+  if (!newest) return [];
+  const run: Transaction[] = [newest];
+  let prev = newest;
+  for (const t of txns.slice(0, -1).reverse()) {
     if (t.date === prev.date) continue; // same-day duplicate (auth + capture)
-    if (similar(t.amountCents, prev.amountCents) || similar(t.amountCents, run[0].amountCents)) run.push(t);
+    if (similar(t.amountCents, prev.amountCents) || similar(t.amountCents, newest.amountCents)) {
+      run.push(t);
+      prev = t;
+    }
   }
   return run.reverse();
 }
@@ -95,19 +99,21 @@ export function detectRecurring(transactions: Transaction[], { today }: DetectOp
     const known = Boolean(merchant.merchantId);
     const run = recurringRun(txns);
     const last = run[run.length - 1];
+    if (!last) continue;
 
     let cadence: Cadence;
     let confidence: number;
 
     if (run.length >= 2) {
-      const intervals = run.slice(1).map((t, i) => daysBetween(run[i].date, t.date));
+      const intervals = run.slice(1).map((t, i) => daysBetween((run[i] as Transaction).date, t.date));
       const best = bestCadence(intervals);
       if (!best || best.fit < 0.6) continue;
       cadence = best.cadence;
       if (run.length < MIN_CHARGES[cadence] + (known ? 0 : 1)) continue;
       // Habitual spending (coffee, groceries) has many other purchases between the "regular" ones.
       // A subscription is most of what an unknown merchant bills over the same span.
-      const inSpan = txns.filter((t) => t.date >= run[0].date && t.date <= last.date).length;
+      const first = run[0] as Transaction;
+      const inSpan = txns.filter((t) => t.date >= first.date && t.date <= last.date).length;
       if (!known && run.length / inSpan < 0.8) continue;
       const consistency = 1 - Math.min(1, Math.abs(median(intervals) - cadenceDays(cadence)) / cadenceDays(cadence));
       confidence = Math.min(0.99, (0.45 + 0.1 * Math.min(run.length - 1, 4) + (known ? 0.15 : 0)) * best.fit * consistency);

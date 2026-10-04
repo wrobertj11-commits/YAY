@@ -1,21 +1,30 @@
-import { createCipheriv, createDecipheriv, randomBytes, randomUUID } from 'node:crypto';
+import { createHmac, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { config } from './config.ts';
+import { loadKeyring, needsRotation, seal, unseal, type KeyProvider } from './keyring.ts';
 
-const key = () => Buffer.from(config.tokenKey, 'hex');
+let keyring: KeyProvider | undefined;
 
-/** AES-256-GCM for provider access tokens at rest. */
+export function keys(): KeyProvider {
+  keyring ??= loadKeyring(process.env, config.devKeyringFile);
+  return keyring;
+}
+
+/** Tests and the rotation script inject a keyring explicitly. */
+export function setKeyring(next: KeyProvider): void {
+  keyring = next;
+}
+
+/** AES-256-GCM with a key id, for provider access tokens at rest. */
 export function encrypt(plain: string): string {
-  const iv = randomBytes(12);
-  const cipher = createCipheriv('aes-256-gcm', key(), iv);
-  const data = Buffer.concat([cipher.update(plain, 'utf8'), cipher.final()]);
-  return [iv, cipher.getAuthTag(), data].map((b) => b.toString('base64url')).join('.');
+  return seal(keys(), plain);
 }
 
 export function decrypt(sealed: string): string {
-  const [iv, tag, data] = sealed.split('.').map((s) => Buffer.from(s, 'base64url'));
-  const decipher = createDecipheriv('aes-256-gcm', key(), iv);
-  decipher.setAuthTag(tag);
-  return Buffer.concat([decipher.update(data), decipher.final()]).toString('utf8');
+  return unseal(keys(), sealed);
+}
+
+export function isStale(sealed: string): boolean {
+  return needsRotation(keys(), sealed);
 }
 
 export function newId(prefix: string): string {
@@ -24,4 +33,27 @@ export function newId(prefix: string): string {
 
 export function newToken(): string {
   return randomBytes(24).toString('base64url');
+}
+
+export function safeEqual(a: string | undefined, b: string | undefined): boolean {
+  if (a === undefined || b === undefined) return false;
+  const ab = Buffer.from(a);
+  const bb = Buffer.from(b);
+  return ab.length === bb.length && timingSafeEqual(ab, bb);
+}
+
+/** Signed, tamper-proof link payloads (e.g. one-click unsubscribe). */
+export function signPayload(payload: string): string {
+  if (!config.linkSecret) throw new Error('LINK_SIGNING_SECRET is not configured');
+  const mac = createHmac('sha256', config.linkSecret).update(payload).digest('base64url');
+  return `${Buffer.from(payload).toString('base64url')}.${mac}`;
+}
+
+export function verifySignedPayload(token: string): string | undefined {
+  if (!config.linkSecret) return undefined;
+  const [body, mac] = token.split('.');
+  if (!body || !mac) return undefined;
+  const payload = Buffer.from(body, 'base64url').toString('utf8');
+  const expected = createHmac('sha256', config.linkSecret).update(payload).digest('base64url');
+  return safeEqual(mac, expected) ? payload : undefined;
 }

@@ -8,7 +8,7 @@ export function formatCents(cents: number): string {
 /** Parses "$1,299.99", "12.5", "USD 9" into cents. */
 export function parseMoney(text: string): number | undefined {
   const m = text.replace(/,/g, '').match(/(\d+(?:\.\d{1,2})?)/);
-  if (!m) return undefined;
+  if (!m?.[1]) return undefined;
   return Math.round(parseFloat(m[1]) * 100);
 }
 

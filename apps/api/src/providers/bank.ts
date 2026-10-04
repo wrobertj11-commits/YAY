@@ -62,9 +62,9 @@ export class PlaidBank implements BankProvider {
     return r.link_token;
   }
 
-  async exchangePublicToken(publicToken: string): Promise<string> {
-    const r = await this.call<{ access_token: string }>('/item/public_token/exchange', { public_token: publicToken });
-    return r.access_token;
+  async exchangePublicToken(publicToken: string): Promise<{ accessToken: string; itemId: string }> {
+    const r = await this.call<{ access_token: string; item_id: string }>('/item/public_token/exchange', { public_token: publicToken });
+    return { accessToken: r.access_token, itemId: r.item_id };
   }
 
   async sync({ accessToken, cursor }: { accessToken?: string; cursor?: string }): Promise<BankSyncResult> {

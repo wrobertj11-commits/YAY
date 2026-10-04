@@ -1,17 +1,25 @@
 import { createServer } from 'node:http';
+import { assertNodeVersion, assertProductionConfig, config } from './config.ts';
+import { keys } from './crypto.ts';
 import { createApp } from './app.ts';
-import { config } from './config.ts';
 import { startJobs } from './jobs.ts';
+import { log, reportError } from './log.ts';
 import { consoleNotifier } from './notify.ts';
 import { defaultDeps } from './pipeline.ts';
 import { Store } from './store.ts';
+
+assertNodeVersion();
+assertProductionConfig();
+keys(); // fail at boot, not on first use, if the keyring is misconfigured
 
 const store = new Store(config.dataFile);
 const server = createServer(createApp(store, defaultDeps));
 const stopJobs = config.runJobs ? startJobs(store, consoleNotifier, defaultDeps) : () => {};
 
+process.on('unhandledRejection', (err) => reportError(err, { source: 'unhandledRejection' }));
+
 server.listen(config.port, () => {
-  console.log(`Trialguard API on http://localhost:${config.port}  (LLM extraction: ${config.llmEnabled ? 'on' : 'off'})`);
+  log.info('api listening', { port: config.port, llm: config.llmEnabled, production: config.production });
 });
 
 for (const sig of ['SIGINT', 'SIGTERM'] as const) {
