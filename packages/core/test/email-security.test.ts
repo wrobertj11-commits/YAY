@@ -1,0 +1,227 @@
+import assert from 'node:assert/strict';
+import { describe, it } from 'node:test';
+import {
+  createManualItem,
+  extractEmailSignal,
+  isTrustedCancellation,
+  reconcile,
+  safeServiceName,
+  scheduleAlerts,
+  senderAddressOf,
+  senderDomainOf,
+  type EmailMessage,
+  type EmailSignal,
+  type Source,
+  type TrackedItem,
+} from '../src/index.ts';
+
+const NOW = '2026-10-03T15:00:00Z';
+const TODAY = '2026-10-03';
+let seq = 0;
+const newId = () => `itm_${++seq}`;
+
+function email(from: string, subject = 'Your Netflix membership has been cancelled', body = 'We have cancelled your membership.'): EmailMessage {
+  return { id: `e_${++seq}`, from, subject, date: NOW, body };
+}
+
+function netflix(): TrackedItem {
+  return createManualItem({ name: 'Netflix', merchantId: 'netflix', amountCents: 1799, cadence: 'monthly', date: '2026-10-20', isTrial: false }, 'itm_netflix', NOW);
+}
+
+function only<T>(list: readonly T[]): T {
+  assert.equal(list.length, 1);
+  const [v] = list;
+  assert.ok(v !== undefined);
+  return v;
+}
+
+/** Runs one cancellation email through rules extraction and reconciliation against an active Netflix item. */
+function cancelWith(from: string, source: Source = 'email', item = netflix()) {
+  const signal = extractEmailSignal(email(from));
+  assert.ok(signal, 'the rules recognize the email');
+  assert.equal(signal.kind, 'cancellation_confirmation');
+  const res = reconcile({ items: [item], transactions: [], recurring: [], signals: [{ ...signal, source }], today: TODAY, now: NOW, newId });
+  return { signal, item: only(res.items), events: res.events };
+}
+
+describe('sender address parsing', () => {
+  it('takes the bracketed address, never the display name', () => {
+    assert.equal(senderDomainOf('Netflix <info@mailer.netflix.com>'), 'mailer.netflix.com');
+    assert.equal(senderDomainOf('"billing@netflix.com" <x@attacker.example>'), 'attacker.example');
+    assert.equal(senderAddressOf('"<info@netflix.com>" <x@attacker.example>'), 'x@attacker.example');
+  });
+
+  it('handles bare and odd addresses', () => {
+    assert.equal(senderDomainOf('INFO@Netflix.COM'), 'netflix.com');
+    assert.equal(senderDomainOf('Netflix info@netflix.com'), 'netflix.com');
+    assert.equal(senderDomainOf(''), undefined);
+    assert.equal(senderDomainOf('Netflix'), undefined);
+    assert.equal(senderDomainOf('root@localhost'), undefined, 'no dot: not a public domain');
+    assert.equal(senderDomainOf('a@b@evil.example'), 'evil.example');
+  });
+
+  it('extraction records the sender domain and attributes by the real address only', () => {
+    const real = extractEmailSignal(email('Netflix <info@account.netflix.com>'));
+    assert.equal(real?.senderDomain, 'account.netflix.com');
+    assert.equal(real?.merchantId, 'netflix');
+
+    // The display name claims Netflix; the subject names nobody we know. No merchant is inferred.
+    const spoof = extractEmailSignal(email('"info@netflix.com" <x@attacker.example>', 'Your subscription has been cancelled', 'Done.'));
+    assert.equal(spoof?.senderDomain, 'attacker.example');
+    assert.equal(spoof?.merchantId, undefined);
+  });
+});
+
+describe('spoofed cancellation emails', () => {
+  it('a cancellation from the merchant (any subdomain) moves the item to cancel_pending', () => {
+    const { item } = cancelWith('Netflix <info@account.netflix.com>');
+    assert.equal(item.status, 'cancel_pending');
+    assert.equal(item.cancelledAt, TODAY);
+  });
+
+  it('a cancellation for a catalog merchant from another domain is ignored', () => {
+    const { signal, item, events } = cancelWith('Netflix Support <support@netflix-billing.example>');
+    assert.equal(signal.merchantId, 'netflix', 'the subject still names Netflix');
+    assert.equal(item.status, 'active');
+    assert.equal(item.cancelledAt, undefined);
+    assert.ok(!item.emailIds.includes(signal.emailId), 'the spoofed email is not attached to the item');
+    assert.deepEqual(events, []);
+  });
+
+  it('look-alike domains do not match', () => {
+    assert.equal(cancelWith('Netflix <info@notnetflix.com>').item.status, 'active');
+    assert.equal(cancelWith('Netflix <info@netflix.com.attacker.example>').item.status, 'active');
+  });
+
+  it('a display-name spoof is ignored', () => {
+    assert.equal(cancelWith('"info@netflix.com" <x@attacker.example>').item.status, 'active');
+  });
+
+  it('a spoofed cancellation does not silence renewal alerts', () => {
+    const { item } = cancelWith('Netflix <billing@attacker.example>');
+    const alerts = scheduleAlerts([item], 'plus', new Date('2026-10-18T15:00:00Z'));
+    assert.ok(alerts.some((a) => a.type === 'renewal' && a.itemId === item.id));
+  });
+
+  it('an email the user forwarded or pasted is their own statement and is trusted', () => {
+    const { item } = cancelWith('someone@attacker.example', 'forwarded');
+    assert.equal(item.status, 'cancel_pending');
+  });
+
+  it('merchants outside the catalog have no domains to check, so the email counts', () => {
+    const gym = createManualItem({ name: 'Crunch Fitness', amountCents: 2999, cadence: 'monthly', date: '2026-10-20', isTrial: false }, 'itm_gym', NOW);
+    const signal: EmailSignal = {
+      kind: 'cancellation_confirmation',
+      emailId: 'e_gym',
+      serviceName: 'Crunch Fitness',
+      receivedAt: TODAY,
+      confidence: 0.8,
+      extractedBy: 'rules',
+      senderDomain: 'crunch.example',
+    };
+    const res = reconcile({ items: [gym], transactions: [], recurring: [], signals: [signal], today: TODAY, now: NOW, newId });
+    assert.equal(only(res.items).status, 'cancel_pending');
+  });
+
+  it('a stored signal without a sender domain cannot cancel a catalog merchant', () => {
+    const legacy: EmailSignal = {
+      kind: 'cancellation_confirmation',
+      emailId: 'e_legacy',
+      merchantId: 'netflix',
+      serviceName: 'Netflix',
+      receivedAt: TODAY,
+      confidence: 0.8,
+      extractedBy: 'llm',
+    };
+    assert.equal(isTrustedCancellation(legacy, netflix()), false);
+    assert.equal(isTrustedCancellation({ ...legacy, senderDomain: 'netflix.com' }, netflix()), true);
+  });
+
+  it('never trusts mail a stranger sent to the forwarding address, even from the "right" domain', () => {
+    const spoof: EmailSignal & { source: 'inbound' } = {
+      kind: 'cancellation_confirmation',
+      emailId: 'e_inbound',
+      merchantId: 'netflix',
+      serviceName: 'Netflix',
+      receivedAt: TODAY,
+      confidence: 0.9,
+      extractedBy: 'rules',
+      senderDomain: 'netflix.com',
+      source: 'inbound',
+    };
+    assert.equal(isTrustedCancellation(spoof, netflix()), false);
+    assert.equal(isTrustedCancellation({ ...spoof, source: 'forwarded' }, netflix()), true);
+  });
+
+  it('checks against the tracked item when the signal names no merchant', () => {
+    const signal: EmailSignal = {
+      kind: 'cancellation_confirmation',
+      emailId: 'e_x',
+      serviceName: 'Netflix',
+      receivedAt: TODAY,
+      confidence: 0.8,
+      extractedBy: 'rules',
+      senderDomain: 'attacker.example',
+    };
+    assert.equal(isTrustedCancellation(signal, netflix()), false);
+  });
+
+  it('stays ignored on every re-run (reconcile is idempotent)', () => {
+    const signal = extractEmailSignal(email('Netflix <billing@attacker.example>'));
+    assert.ok(signal);
+    let items = [netflix()];
+    for (let i = 0; i < 3; i++) {
+      const res = reconcile({ items, transactions: [], recurring: [], signals: [signal], today: TODAY, now: NOW, newId });
+      items = res.items;
+      assert.deepEqual(res.events, []);
+    }
+    assert.equal(only(items).status, 'active');
+  });
+});
+
+describe('extraction cost on hostile input', () => {
+  it('stays linear on long digit runs (no regex backtracking blow-up)', () => {
+    const started = performance.now();
+    extractEmailSignal({ id: 'dos', from: 'a@b.com', subject: 'Your free trial', date: '2026-10-01T00:00:00Z', body: '1'.repeat(200_000) });
+    assert.ok(performance.now() - started < 500, `took ${Math.round(performance.now() - started)} ms`);
+  });
+});
+
+describe('forged "trial started" emails', () => {
+  it('cannot re-open a cancelled item or wipe the evidence of a charge after cancellation', () => {
+    const cancelled: TrackedItem = {
+      ...netflix(),
+      status: 'charged_after_cancel',
+      cancelledAt: '2026-09-20',
+      cancelProof: 'conf #123',
+      postCancelChargeIds: ['t1'],
+    };
+    const forged = extractEmailSignal(email('Netflix Team <hello@attacker.example>', 'Your Netflix free trial has started', 'Your free trial ends on October 20, 2026. Then $15.49/month.'))!;
+    assert.equal(forged.kind, 'trial_signup');
+    const r = reconcile({ items: [cancelled], transactions: [], recurring: [], signals: [{ ...forged, receivedAt: TODAY }], today: TODAY, now: `${TODAY}T12:00:00Z`, newId: () => 'x' });
+    const item = r.items[0];
+    assert.equal(item?.status, 'charged_after_cancel');
+    assert.equal(item?.cancelProof, 'conf #123');
+    assert.deepEqual(item?.postCancelChargeIds, ['t1']);
+  });
+
+  it('a verified-cancelled item only restarts on a signup from the merchant itself', () => {
+    const verified: TrackedItem = { ...netflix(), status: 'cancel_verified', cancelledAt: '2026-09-01', cancelVerifiedAt: '2026-09-20' };
+    const forged = extractEmailSignal(email('Netflix <hello@attacker.example>', 'Your Netflix free trial has started', 'Your free trial ends on October 20, 2026.'))!;
+    const real = extractEmailSignal(email('Netflix <info@account.netflix.com>', 'Your Netflix free trial has started', 'Your free trial ends on October 20, 2026.'))!;
+    const run = (s: typeof forged) => reconcile({ items: [verified], transactions: [], recurring: [], signals: [{ ...s, receivedAt: TODAY }], today: TODAY, now: `${TODAY}T12:00:00Z`, newId: () => 'x' }).items[0]?.status;
+    assert.equal(run(forged), 'cancel_verified');
+    assert.equal(run(real), 'trial');
+  });
+});
+
+describe('sender-chosen service names', () => {
+  it('drops names carrying phone numbers or links, and flags unknown senders for review', () => {
+    const s = extractEmailSignal(email('"Call 1-888-555-0100 or visit refund-desk.example to stop charges" <billing@attacker.example>', 'Your free trial has started', 'Your free trial ends on October 20, 2026. Then $9.99/month.'))!;
+    assert.equal(s.serviceName, 'Unknown service');
+    assert.ok(s.confidence < 0.6, 'needs review');
+    assert.equal(safeServiceName('Brightline Yoga'), 'Brightline Yoga');
+    assert.equal(safeServiceName('Call 888 555 0100'), undefined);
+    assert.equal(safeServiceName('see www.example.com'), undefined);
+  });
+});

@@ -1,0 +1,15 @@
+{
+  "name": "@trialguard/api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node --watch src/server.ts",
+    "start": "node src/server.ts"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.131.0",
+    "@trialguard/core": "*",
+    "zod": "^4.6.0"
+  }
+}
